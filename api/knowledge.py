@@ -21,7 +21,7 @@ from knowledge_graph.models import (
 )
 from typing import List
 from setting.db import SessionLocal, db_manager
-from sqlalchemy import or_, and_, func
+from sqlalchemy import or_, and_, func, case
 
 logger = logging.getLogger(__name__)
 
@@ -371,16 +371,28 @@ async def list_topics(
                 GraphBuildStatus.external_database_uri,
                 func.count(GraphBuildStatus.source_id).label("total_documents"),
                 func.sum(
-                    func.case([(GraphBuildStatus.status == "pending", 1)], else_=0)
+                    case(
+                        (GraphBuildStatus.status == "pending", 1),
+                        else_=0
+                    )
                 ).label("pending_count"),
                 func.sum(
-                    func.case([(GraphBuildStatus.status == "processing", 1)], else_=0)
+                    case(
+                        (GraphBuildStatus.status == "processing", 1),
+                        else_=0
+                    )
                 ).label("processing_count"),
                 func.sum(
-                    func.case([(GraphBuildStatus.status == "completed", 1)], else_=0)
+                    case(
+                        (GraphBuildStatus.status == "completed", 1),
+                        else_=0
+                    )
                 ).label("completed_count"),
                 func.sum(
-                    func.case([(GraphBuildStatus.status == "failed", 1)], else_=0)
+                    case(
+                        (GraphBuildStatus.status == "failed", 1),
+                        else_=0
+                    )
                 ).label("failed_count"),
                 func.max(GraphBuildStatus.updated_at).label("latest_update"),
             )

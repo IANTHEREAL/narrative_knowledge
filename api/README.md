@@ -30,19 +30,31 @@ The API will be available at `http://localhost:8000`
 
 **POST** `/api/v1/knowledge/upload`
 
-Upload and process documents for knowledge graph building.
+Upload and process documents for knowledge graph building with batch support.
 
 **Parameters:**
 - `files`: One or more files (PDF, Markdown, TXT, SQL)
-- `doc_link`: Link to original document (required)
+- `links`: List of links to original documents (must match number of files)
 - `topic_name`: Topic name for knowledge graph building (required)
+- `database_uri`: Database connection string (optional, uses local if not provided)
 
-**Example using curl:**
+**Example using curl (single file):**
 
 ```bash
 curl -X POST "http://localhost:8000/api/v1/knowledge/upload" \
   -F "files=@document.pdf" \
-  -F "doc_link=https://docs.google.com/document/d/abc123" \
+  -F "links=https://docs.google.com/document/d/abc123" \
+  -F "topic_name=project-alpha"
+```
+
+**Example using curl (batch upload):**
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/knowledge/upload" \
+  -F "files=@document1.pdf" \
+  -F "files=@document2.md" \
+  -F "links=https://docs.google.com/document/d/abc123" \
+  -F "links=https://github.com/repo/readme" \
   -F "topic_name=project-alpha"
 ```
 
@@ -50,16 +62,26 @@ curl -X POST "http://localhost:8000/api/v1/knowledge/upload" \
 ```json
 {
   "status": "success",
-  "message": "Documents uploaded successfully",
+  "message": "Batch upload completed: 2/2 documents processed successfully",
   "data": {
-    "uploaded_count": 1,
+    "uploaded_count": 2,
+    "total_count": 2,
+    "success_rate": 1.0,
     "documents": [
       {
         "id": "cc5b92b6-ef73-4c4d-8b54-60c610d3443d",
-        "name": "document",
-        "file_path": "uploads/document/document.pdf",
+        "name": "document1",
+        "file_path": "uploads/project-alpha/document1/document1.pdf",
         "doc_link": "https://docs.google.com/document/d/abc123",
         "file_type": "pdf",
+        "status": "processed"
+      },
+      {
+        "id": "dd6c03c7-fg84-5d5e-9c65-71d721e4554e",
+        "name": "document2",
+        "file_path": "uploads/project-alpha/document2/document2.md",
+        "doc_link": "https://github.com/repo/readme",
+        "file_type": "markdown",
         "status": "processed"
       }
     ],
@@ -74,36 +96,50 @@ curl -X POST "http://localhost:8000/api/v1/knowledge/upload" \
 import requests
 
 url = "http://localhost:8000/api/v1/knowledge/upload"
-file_path = "document.pdf"
 
-with open(file_path, 'rb') as f:
-    files = {'files': (file_path.split('/')[-1], f, 'application/pdf')}
+# Single file upload
+with open("document.pdf", 'rb') as f:
+    files = {'files': ('document.pdf', f, 'application/pdf')}
     data = {
-        'doc_link': "https://docs.google.com/document/d/abc123",
+        'links': ["https://docs.google.com/document/d/abc123"],
         'topic_name': "project-alpha"
     }
     response = requests.post(url, files=files, data=data)
-    
+
+# Batch upload
+files = [
+    ('files', ('doc1.pdf', open('doc1.pdf', 'rb'), 'application/pdf')),
+    ('files', ('doc2.md', open('doc2.md', 'rb'), 'text/markdown'))
+]
+data = {
+    'links': ["https://docs.google.com/document/d/abc123", "https://github.com/repo/readme"],
+    'topic_name': "project-alpha"
+}
+response = requests.post(url, files=files, data=data)
+
 print(response.status_code)
-print(response.text)
+print(response.json())
 ```
 
-### List Documents
+### List Topics
 
-**GET** `/api/v1/knowledge/`
+**GET** `/api/v1/knowledge/topics`
 
-Retrieve a list of documents with optional filtering and pagination.
+Retrieve a list of all topics with their processing status summary.
 
 **Query Parameters:**
-- `topic_name`: Filter by topic name (exact match)
-- `name`: Filter by document name (partial match)
-- `doc_link`: Filter by original document link (exact match)
-- `limit`: Maximum results (default 20, max 100)
-- `offset`: Results offset (default 0)
+- `database_uri`: Filter topics by database URI (optional)
+  - Empty string or not provided: Local database topics
+  - Specific URI: External database topics
 
 **Example:**
 ```bash
-curl "http://localhost:8000/api/v1/knowledge/?topic_name=project-alpha&limit=10"
+curl "http://localhost:8000/api/v1/knowledge/topics"
+```
+
+**Example with database filter:**
+```bash
+curl "http://localhost:8000/api/v1/knowledge/topics?database_uri=postgresql://user:pass@host:5432/db"
 ```
 
 **Response:**
@@ -111,63 +147,34 @@ curl "http://localhost:8000/api/v1/knowledge/?topic_name=project-alpha&limit=10"
 {
   "status": "success",
   "data": {
-    "documents": [
+    "topics": [
       {
-        "id": "cc5b92b6-ef73-4c4d-8b54-60c610d3443d",
-        "name": "document",
-        "doc_link": "https://docs.google.com/document/d/abc123",
-        "file_type": "pdf",
-        "content_preview": "This document contains information about...",
-        "created_at": "2024-01-15T10:30:00",
-        "updated_at": "2024-01-15T10:30:00",
-        "build_statuses": [
-          {
-            "topic_name": "project-alpha",
-            "status": "completed",
-            "created_at": "2024-01-15T10:30:00",
-            "updated_at": "2024-01-15T10:35:00",
-            "error_message": null
-          }
-        ],
-        "graph_elements": {
-          "entities": [
-            {
-              "id": "entity-123",
-              "name": "Project Alpha",
-              "description": "Main project entity"
-            }
-          ],
-          "relationships": [
-            {
-              "id": "rel-456",
-              "name": "entity-123 -> entity-789",
-              "description": "Project relationship"
-            }
-          ]
-        }
+        "topic_name": "project-alpha",
+        "total_documents": 5,
+        "pending_count": 1,
+        "processing_count": 0,
+        "completed_count": 3,
+        "failed_count": 1,
+        "latest_update": "2024-01-15T10:35:00",
+        "database_uri": ""
+      },
+      {
+        "topic_name": "project-beta",
+        "total_documents": 3,
+        "pending_count": 0,
+        "processing_count": 1,
+        "completed_count": 2,
+        "failed_count": 0,
+        "latest_update": "2024-01-15T11:20:00",
+        "database_uri": "postgresql://user:pass@host:5432/external_db"
       }
     ],
-    "total": 1,
-    "limit": 10,
-    "offset": 0,
-    "has_more": false
+    "total_topics": 2,
+    "filter_database_uri": null,
+    "source": "local_database"
   }
 }
 ```
-
-### Get Document Details
-
-**GET** `/api/v1/knowledge/{document_id}`
-
-Retrieve detailed information about a specific document.
-
-**Example:**
-```bash
-curl "http://localhost:8000/api/v1/knowledge/cc5b92b6-ef73-4c4d-8b54-60c610d3443d"
-```
-
-**Response:**
-Same structure as individual document in the list response above.
 
 ## Configuration
 
@@ -180,6 +187,7 @@ Same structure as individual document in the list response above.
 ### File Size Limits
 - Maximum file size: 10MB per file
 
-### Required Metadata for upload file
-- **doc_link**: Link to the original document (required)
+### Required Parameters for Upload
+- **files**: One or more files to upload
+- **links**: List of links to original documents (must match file count)
 - **topic_name**: Topic name for knowledge graph building (required)
