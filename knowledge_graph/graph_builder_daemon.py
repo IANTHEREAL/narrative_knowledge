@@ -76,7 +76,7 @@ class GraphBuildDaemon:
         external_database_uri = task_info["external_database_uri"]
 
         logger.info(
-            f"Processing earliest topic: {topic_name} with {len(source_ids)} sources (database: {"external" if external_database_uri else 'local'})"
+            f"Processing earliest topic: {topic_name} with {len(source_ids)} sources (database: {'external' if external_database_uri else 'local'})"
         )
 
         try:

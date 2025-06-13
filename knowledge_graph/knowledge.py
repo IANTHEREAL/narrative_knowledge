@@ -148,11 +148,11 @@ class KnowledgeBuilder:
                     db.add(build_status)
                     db.commit()
                     logger.info(
-                        f"Created build status record for source {source_id} in topic {topic_name} (external_db: {external_database_uri[:50] if external_database_uri else 'local'})"
+                        f"Created build status record for source {source_id} in topic {topic_name} (external_db: {'external' if external_database_uri else 'local'})"
                     )
                 else:
                     logger.info(
-                        f"Build status record already exists for source {source_id} in topic {topic_name} (external_db: {external_database_uri[:50] if external_database_uri else 'local'})"
+                        f"Build status record already exists for source {source_id} in topic {topic_name} (external_db: {'external' if external_database_uri else 'local'})"
                     )
 
         except Exception as e:
