@@ -6,6 +6,7 @@ from knowledge_graph.models import DocumentSummary
 from knowledge_graph.summarizer import DocumentSummarizer
 from knowledge_graph.graph import NarrativeKnowledgeGraphBuilder
 from llm.factory import LLMInterface
+from setting.db import SessionLocal
 
 
 logger = logging.getLogger(__name__)
@@ -16,18 +17,22 @@ class KnowledgeGraphBuilder:
     Knowledge graph builder using document summaries.
     """
 
-    def __init__(self, llm_client: LLMInterface, embedding_func):
+    def __init__(self, llm_client: LLMInterface, embedding_func, session_factory=None):
         """
         Initialize the iterative builder.
 
         Args:
             llm_client: LLM interface for processing
             embedding_func: Function to generate embeddings
+            session_factory: Database session factory. If None, uses default SessionLocal.
         """
         self.llm_client = llm_client
         self.embedding_func = embedding_func
-        self.summarizer = DocumentSummarizer(llm_client)
-        self.graph_builder = NarrativeKnowledgeGraphBuilder(llm_client, embedding_func)
+        self.session_factory = session_factory or SessionLocal
+        self.summarizer = DocumentSummarizer(llm_client, session_factory)
+        self.graph_builder = NarrativeKnowledgeGraphBuilder(
+            llm_client, embedding_func, session_factory
+        )
 
     def build_knowledge_graph(
         self,
@@ -125,9 +130,7 @@ class KnowledgeGraphBuilder:
             )
 
             new_entities_created, new_relationships_created = (
-                self.graph_builder.convert_triplets_to_graph(
-                    triplets, doc["source_id"]
-                )
+                self.graph_builder.convert_triplets_to_graph(triplets, doc["source_id"])
             )
             entities_created += new_entities_created
             relationships_created += new_relationships_created

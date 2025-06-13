@@ -280,8 +280,11 @@ class GraphBuildStatus(Base):
 
     topic_name = Column(String(255), primary_key=True, nullable=False)
     source_id = Column(
-        String(36), ForeignKey("source_data.id"), primary_key=True, nullable=False
-    )
+        String(36), primary_key=True, nullable=False
+    )  # Removed FK constraint for multi-db support
+    external_database_uri = Column(
+        String(512), nullable=False, default=""
+    )  # Track external database
     status = Column(
         Enum("pending", "processing", "completed", "failed"),
         nullable=False,
@@ -297,14 +300,15 @@ class GraphBuildStatus(Base):
     error_message = Column(Text, nullable=True)
     progress_info = Column(JSON, nullable=True)  # Store build progress details
 
-    # Relationships
-    source_data = relationship("SourceData")
+    # Note: Removed source_data relationship due to multi-database support
+    # The source_data may exist in different databases
 
     __table_args__ = (
         Index("idx_graph_build_status_topic", "topic_name"),
         Index("idx_graph_build_status_source", "source_id"),
         Index("idx_graph_build_status_status", "status"),
         Index("idx_graph_build_status_created", "created_at"),
+        Index("idx_graph_build_status_external_db", "external_database_uri"),
     )
 
     def __repr__(self):

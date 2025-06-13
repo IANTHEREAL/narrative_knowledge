@@ -15,11 +15,14 @@ class KnowledgeBuilder:
     A builder class for constructing knowledge graphs from documents.
     """
 
-    def __init__(self):
+    def __init__(self, session_factory=None):
         """
         Initialize the builder with a graph instance and specifications.
+
+        Args:
+            session_factory: Database session factory. If None, uses default SessionLocal.
         """
-        pass
+        self.SessionLocal = session_factory or SessionLocal
 
     def extract_knowledge(self, source_path: str, attributes: Dict[str, Any], **kwargs):
         # Extract basic info of source
@@ -27,7 +30,7 @@ class KnowledgeBuilder:
         if doc_link is None or doc_link == "":
             doc_link = source_path
 
-        with SessionLocal() as db:
+        with self.SessionLocal() as db:
             # Check if source data already exists by hash or doc_link
             existing_source = (
                 db.query(SourceData).filter((SourceData.link == doc_link)).first()
@@ -60,7 +63,7 @@ class KnowledgeBuilder:
         name = Path(source_path).stem
         source_hash = hashlib.sha256(full_content.encode("utf-8")).hexdigest()
 
-        with SessionLocal() as db:
+        with self.SessionLocal() as db:
             # Check if source data already exists by hash
             existing_source = (
                 db.query(SourceData).filter(SourceData.hash == source_hash).first()
@@ -107,25 +110,29 @@ class KnowledgeBuilder:
                     "source_type": source_type,
                 }
 
-    def create_build_status_record(self, source_id: str, topic_name: str) -> None:
+    def create_build_status_record(
+        self, source_id: str, topic_name: str, external_database_uri: str = ""
+    ) -> None:
         """
         Create a GraphBuildStatus record for the uploaded document.
 
         Args:
             source_id: The source document ID
             topic_name: The topic name for graph building
+            external_database_uri: External database URI for multi-database mode
 
         Raises:
             Exception: If database operation fails
         """
         try:
-            with SessionLocal() as db:
+            with self.SessionLocal() as db:
                 # Check if record already exists
                 existing_status = (
                     db.query(GraphBuildStatus)
                     .filter(
                         GraphBuildStatus.topic_name == topic_name,
                         GraphBuildStatus.source_id == source_id,
+                        GraphBuildStatus.external_database_uri == external_database_uri,
                     )
                     .first()
                 )
@@ -135,16 +142,17 @@ class KnowledgeBuilder:
                     build_status = GraphBuildStatus(
                         topic_name=topic_name,
                         source_id=source_id,
+                        external_database_uri=external_database_uri,
                         status="pending",
                     )
                     db.add(build_status)
                     db.commit()
                     logger.info(
-                        f"Created build status record for source {source_id} in topic {topic_name}"
+                        f"Created build status record for source {source_id} in topic {topic_name} (external_db: {external_database_uri[:50] if external_database_uri else 'local'})"
                     )
                 else:
                     logger.info(
-                        f"Build status record already exists for source {source_id} in topic {topic_name}"
+                        f"Build status record already exists for source {source_id} in topic {topic_name} (external_db: {external_database_uri[:50] if external_database_uri else 'local'})"
                     )
 
         except Exception as e:

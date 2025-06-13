@@ -30,12 +30,19 @@ class NarrativeKnowledgeGraphBuilder:
         self,
         llm_client: LLMInterface,
         embedding_func: Callable,
+        session_factory=None,
     ):
         """
         Initialize the builder with LLM client and embedding function.
+
+        Args:
+            llm_client: LLM interface for processing
+            embedding_func: Function to generate embeddings
+            session_factory: Database session factory. If None, uses default SessionLocal.
         """
         self.llm_client = llm_client
         self.embedding_func = embedding_func
+        self.SessionLocal = session_factory or SessionLocal
 
     def generate_skeletal_graph_from_summaries(
         self, topic_name: str, topic_docs: List[Dict], force_regenerate: bool = False
@@ -134,7 +141,7 @@ Now, please generate the skeletal graph for {topic_name}.
         if len(topic_docs) == 0:
             raise ValueError(f"No documents found for topic: {topic_name}")
 
-        with SessionLocal() as db:
+        with self.SessionLocal() as db:
             # Check if blueprint already exists
             existing_blueprint = (
                 db.query(AnalysisBlueprint)
@@ -260,7 +267,7 @@ Now, please generate the analysis blueprint for {topic_name}.
             f"Processing document to extract triplets: {document['source_name']}"
         )
         # check whether the document is already processed with topic_name in SourceGraphMapping
-        with SessionLocal() as db:
+        with self.SessionLocal() as db:
             existing_document = (
                 db.query(SourceGraphMapping)
                 .filter(
@@ -557,7 +564,7 @@ Now, please generate the structural triplets for {topic_name}.
             def process_single_triplet():
                 nonlocal entities_created, relationships_created
 
-                with SessionLocal() as db:
+                with self.SessionLocal() as db:
                     try:
                         # Create or get subject entity
                         subject_data = triplet["subject"]
@@ -746,7 +753,7 @@ Now, please generate the structural triplets for {topic_name}.
 
     def get_skeletal_graph_for_topic(self, topic_name: str) -> Optional[Dict]:
         """Retrieve saved skeletal graph for a topic."""
-        with SessionLocal() as db:
+        with self.SessionLocal() as db:
             blueprint = (
                 db.query(AnalysisBlueprint)
                 .filter(AnalysisBlueprint.topic_name == topic_name)
@@ -791,7 +798,7 @@ Now, please generate the structural triplets for {topic_name}.
             def process_single_entity():
                 nonlocal entities_created
 
-                with SessionLocal() as db:
+                with self.SessionLocal() as db:
                     try:
                         # Check if entity already exists
                         existing_entity = (
@@ -864,7 +871,7 @@ Now, please generate the structural triplets for {topic_name}.
             def process_single_relationship():
                 nonlocal relationships_created
 
-                with SessionLocal() as db:
+                with self.SessionLocal() as db:
                     try:
                         # Get entity IDs from cache or database
                         source_entity_id = entity_id_cache.get(source_name)

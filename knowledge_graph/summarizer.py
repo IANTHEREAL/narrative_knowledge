@@ -16,14 +16,16 @@ class DocumentSummarizer:
     Summaries are cached in database to avoid recomputation.
     """
 
-    def __init__(self, llm_client: LLMInterface):
+    def __init__(self, llm_client: LLMInterface, session_factory=None):
         """
         Initialize the document summarizer.
 
         Args:
             llm_client: LLM interface for generating summaries
+            session_factory: Database session factory. If None, uses default SessionLocal.
         """
         self.llm_client = llm_client
+        self.SessionLocal = session_factory or SessionLocal
 
     def get_or_create_summary(
         self, topic_name: str, document: Dict, force_regenerate: bool = False
@@ -39,7 +41,7 @@ class DocumentSummarizer:
         Returns:
             DocumentSummary object
         """
-        with SessionLocal() as db:
+        with self.SessionLocal() as db:
             # Check for existing summary
             logger.info(
                 f"Checking for existing summary for document: {document['source_name']}"
@@ -74,7 +76,7 @@ class DocumentSummarizer:
             )
             raise e
 
-        with SessionLocal() as db:
+        with self.SessionLocal() as db:
 
             if existing_summary:
                 # Update existing summary
