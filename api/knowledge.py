@@ -420,7 +420,7 @@ async def list_topics(
                     latest_update=(
                         stats.latest_update.isoformat() if stats.latest_update else None
                     ),
-                    database_uri=stats.external_database_uri,
+                    database_uri="local" if db_manager.is_local_mode(stats.external_database_uri) else "external",
                 )
                 topic_summaries.append(topic_summary)
 
@@ -430,7 +430,6 @@ async def list_topics(
             response_data = {
                 "topics": [topic.dict() for topic in topic_summaries],
                 "total_topics": len(topic_summaries),
-                "filter_database_uri": database_uri,
                 "source": "local_database",  # Always from local database
             }
 
