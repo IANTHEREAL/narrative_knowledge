@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from setting.base import DATABASE_URI, SESSION_POOL_SIZE
@@ -59,7 +59,7 @@ class DatabaseManager:
 
         # Multi-database mode
         if database_uri not in self.user_connections:
-            logger.info(f"Creating new connection for database: {database_uri[:50]}...")
+            logger.info(f"Creating new connection for external database")
             try:
                 engine = create_engine(
                     database_uri,
@@ -139,7 +139,7 @@ class DatabaseManager:
             session_factory = self.get_session_factory(database_uri)
             with session_factory() as session:
                 # Simple query to test connection
-                session.execute("SELECT 1")
+                session.execute(text("SELECT 1"))
                 return True
         except Exception as e:
             logger.error(f"Database connection validation failed: {e}")
