@@ -9,7 +9,7 @@ from datetime import datetime
 from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
-from setting.db import SessionLocal
+from setting.db import SessionLocal, db_manager
 from knowledge_graph.models import GraphBuildStatus, SourceData
 from knowledge_graph.graph_builder import KnowledgeGraphBuilder
 from llm.factory import LLMInterface
@@ -43,7 +43,6 @@ class GraphBuildDaemon:
         self.embedding_func = embedding_func or get_text_embedding
         self.check_interval = check_interval
         self.max_retries = max_retries
-        self.graph_builder = KnowledgeGraphBuilder(self.llm_client, self.embedding_func)
         self.is_running = False
 
     def start(self):
@@ -66,27 +65,22 @@ class GraphBuildDaemon:
 
     def _process_pending_tasks(self):
         """Process the earliest pending graph build topic."""
-        # Step 1: Find earliest topic and prepare data (inside db session)
-        topic_name, source_ids, topic_docs = self._prepare_topic_build()
+        # Step 1: Find earliest task and prepare data (inside db session)
+        task_info = self._prepare_task_build()
 
-        if not topic_name:
+        if not task_info:
             return
 
+        topic_name = task_info["topic_name"]
+        source_ids = task_info["source_ids"]
+        external_database_uri = task_info["external_database_uri"]
+
         logger.info(
-            f"Processing earliest topic: {topic_name} with {len(source_ids)} sources"
+            f"Processing earliest topic: {topic_name} with {len(source_ids)} sources (database: {"external" if external_database_uri else 'local'})"
         )
 
         try:
-            # Step 2: Build knowledge graph (outside db session)
-            logger.info(f"Starting graph build for topic: {topic_name}")
-            result = self.graph_builder.build_knowledge_graph(topic_name, topic_docs)
-
-            # Step 3: Update final status (new db session)
-            self._update_final_status(topic_name, source_ids, "completed")
-
-            logger.info(f"Successfully completed graph build for topic: {topic_name}")
-            logger.info(f"Build results: {result}")
-
+            self._process_task(task_info, external_database_uri)
         except Exception as e:
             error_message = f"Graph build failed: {str(e)}"
             logger.error(
@@ -94,50 +88,78 @@ class GraphBuildDaemon:
             )
 
             # Update tasks to failed status
-            self._update_final_status(topic_name, source_ids, "failed", error_message)
+            self._update_final_status(
+                topic_name, source_ids, external_database_uri, "failed", error_message
+            )
 
-    def _prepare_topic_build(self) -> Tuple[Optional[str], List[str], List[Dict]]:
+    def _prepare_task_build(self) -> Optional[Dict]:
         """
-        Prepare topic build by finding earliest topic, updating status, and getting source data.
+        Prepare task build by finding earliest task, updating status, and getting source data.
 
         Returns:
-            Tuple of (topic_name, source_ids, topic_docs) or (None, [], []) if no pending tasks
+            Dict with task info or None if no pending tasks
         """
         with SessionLocal() as db:
-            # Find the earliest pending topic
-            earliest_topic = self._get_earliest_pending_topic(db)
+            # Find the earliest pending task
+            earliest_task = self._get_earliest_pending_task(db)
 
-            if not earliest_topic:
-                return None, [], []
+            if not earliest_task:
+                return None
 
-            # Get all pending tasks for this topic
-            topic_tasks = self._get_pending_tasks_for_topic(db, earliest_topic)
+            topic_name = earliest_task.topic_name
+            external_database_uri = earliest_task.external_database_uri
+
+            # Get all pending tasks for this topic and database combination
+            topic_tasks = self._get_pending_tasks_for_topic_and_db(
+                db, topic_name, external_database_uri
+            )
             source_ids = [task.source_id for task in topic_tasks]
 
-            # Update all tasks to processing status
-            self._update_task_status(db, earliest_topic, source_ids, "processing")
+            # Update all tasks to processing status in local database
+            self._update_task_status(
+                db, topic_name, source_ids, external_database_uri, "processing"
+            )
 
-            # Fetch source data and create source list
-            topic_docs = self._create_source_list(db, source_ids)
+            # Fetch source data from appropriate database
+            if db_manager.is_local_mode(external_database_uri):
+                # Get data from local database
+                topic_docs = self._create_source_list(db, source_ids)
+            else:
+                # Get data from user database
+                user_session_factory = db_manager.get_session_factory(
+                    external_database_uri
+                )
+                with user_session_factory() as user_db:
+                    topic_docs = self._create_source_list(user_db, source_ids)
 
             if not topic_docs:
-                logger.warning(f"No valid sources found for topic: {earliest_topic}")
-                self._update_task_status(
-                    db, earliest_topic, source_ids, "failed", "No valid sources found"
+                logger.warning(f"No valid sources found for topic: {topic_name}")
+                # Use _update_final_status to update both local and external databases
+                self._update_final_status(
+                    topic_name,
+                    source_ids,
+                    external_database_uri,
+                    "failed",
+                    "No valid sources found",
                 )
-                return None, [], []
+                return None
 
-            return earliest_topic, source_ids, topic_docs
+            return {
+                "topic_name": topic_name,
+                "source_ids": source_ids,
+                "external_database_uri": external_database_uri,
+                "topic_docs": topic_docs,
+            }
 
-    def _get_earliest_pending_topic(self, db: Session) -> Optional[str]:
+    def _get_earliest_pending_task(self, db: Session) -> Optional[GraphBuildStatus]:
         """
-        Get the topic name with the earliest scheduled_at time among pending tasks.
+        Get the earliest pending task across all databases.
 
         Args:
             db: Database session
 
         Returns:
-            Topic name of the earliest pending task, or None if no pending tasks
+            Earliest pending GraphBuildStatus record, or None if no pending tasks
         """
         earliest_task = (
             db.query(GraphBuildStatus)
@@ -151,20 +173,21 @@ class GraphBuildDaemon:
             .first()
         )
 
-        return earliest_task.topic_name if earliest_task else None
+        return earliest_task
 
-    def _get_pending_tasks_for_topic(
-        self, db: Session, topic_name: str
+    def _get_pending_tasks_for_topic_and_db(
+        self, db: Session, topic_name: str, external_database_uri: str
     ) -> List[GraphBuildStatus]:
         """
-        Get all pending tasks for a specific topic.
+        Get all pending tasks for a specific topic and database combination.
 
         Args:
             db: Database session
             topic_name: Name of the topic
+            external_database_uri: External database URI
 
         Returns:
-            List of pending GraphBuildStatus records for the topic
+            List of pending GraphBuildStatus records for the topic and database
         """
         return (
             db.query(GraphBuildStatus)
@@ -175,6 +198,7 @@ class GraphBuildDaemon:
                         GraphBuildStatus.status == "processing",
                     ),
                     GraphBuildStatus.topic_name == topic_name,
+                    GraphBuildStatus.external_database_uri == external_database_uri,
                 )
             )
             .order_by(GraphBuildStatus.scheduled_at.asc())
@@ -186,16 +210,18 @@ class GraphBuildDaemon:
         db: Session,
         topic_name: str,
         source_ids: List[str],
+        external_database_uri: str,
         status: str,
         error_message: Optional[str] = None,
     ):
         """
-        Update the status of graph build tasks.
+        Update the status of graph build tasks in local database.
 
         Args:
             db: Database session
             topic_name: Name of the topic
             source_ids: List of source IDs to update
+            external_database_uri: External database URI
             status: New status to set
             error_message: Error message if status is 'failed'
         """
@@ -209,21 +235,27 @@ class GraphBuildDaemon:
                 and_(
                     GraphBuildStatus.topic_name == topic_name,
                     GraphBuildStatus.source_id.in_(source_ids),
+                    GraphBuildStatus.external_database_uri == external_database_uri,
                 )
             ).update(update_data, synchronize_session=False)
 
             db.commit()
-            logger.info(f"Updated {len(source_ids)} tasks to status: {status}")
+            logger.info(
+                f"Updated {len(source_ids)} local database tasks to status: {status}"
+            )
 
         except Exception as e:
             db.rollback()
-            logger.error(f"Failed to update task status: {e}", exc_info=True)
+            logger.error(
+                f"Failed to update local database task status: {e}", exc_info=True
+            )
             raise
 
     def _update_final_status(
         self,
         topic_name: str,
         source_ids: List[str],
+        external_database_uri: str,
         status: str,
         error_message: Optional[str] = None,
     ):
@@ -234,10 +266,12 @@ class GraphBuildDaemon:
         Args:
             topic_name: Name of the topic
             source_ids: List of source IDs to update
+            external_database_uri: External database URI
             status: New status to set
             error_message: Error message if status is 'failed'
         """
         try:
+            # Update local database
             with SessionLocal() as db:
                 update_data = {"status": status, "updated_at": func.current_timestamp()}
 
@@ -248,12 +282,38 @@ class GraphBuildDaemon:
                     and_(
                         GraphBuildStatus.topic_name == topic_name,
                         GraphBuildStatus.source_id.in_(source_ids),
+                        GraphBuildStatus.external_database_uri == external_database_uri,
                     )
                 ).update(update_data, synchronize_session=False)
 
                 db.commit()
                 logger.info(
-                    f"Updated {len(source_ids)} tasks to final status: {status}"
+                    f"Updated {len(source_ids)} local database tasks to final status: {status} (local database)"
+                )
+
+            if db_manager.is_local_mode(external_database_uri):
+                return
+
+            user_session_factory = db_manager.get_session_factory(external_database_uri)
+            with user_session_factory() as db:
+                update_data = {"status": status, "updated_at": func.current_timestamp()}
+
+                if error_message:
+                    update_data["error_message"] = error_message
+
+                # In external database, records have empty external_database_uri
+                db.query(GraphBuildStatus).filter(
+                    and_(
+                        GraphBuildStatus.topic_name == topic_name,
+                        GraphBuildStatus.source_id.in_(source_ids),
+                        GraphBuildStatus.external_database_uri
+                        == "",  # External DB records have empty URI
+                    )
+                ).update(update_data, synchronize_session=False)
+
+                db.commit()
+                logger.info(
+                    f"Updated {len(source_ids)} external database tasks to final status: {status}"
                 )
 
         except Exception as e:
@@ -335,3 +395,30 @@ class GraphBuildDaemon:
             + completed_count
             + failed_count,
         }
+
+    def _process_task(self, task_info: Dict, external_database_uri: str):
+        """Process a local database task."""
+        topic_name = task_info["topic_name"]
+        source_ids = task_info["source_ids"]
+        external_database_uri = task_info["external_database_uri"]
+        topic_docs = task_info["topic_docs"]
+
+        if db_manager.is_local_mode(external_database_uri):
+            session_factory = SessionLocal
+            logger.info(f"Starting local graph build for topic: {topic_name}")
+        else:
+            session_factory = db_manager.get_session_factory(external_database_uri)
+            logger.info(f"Starting external graph build for topic: {topic_name}")
+
+        graph_builder = KnowledgeGraphBuilder(
+            self.llm_client, self.embedding_func, session_factory
+        )
+        result = graph_builder.build_knowledge_graph(topic_name, topic_docs)
+
+        # Update final status
+        self._update_final_status(
+            topic_name, source_ids, external_database_uri, "completed"
+        )
+
+        logger.info(f"Successfully completed graph build for topic: {topic_name}")
+        logger.info(f"Build results: {result}")
