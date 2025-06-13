@@ -5,21 +5,29 @@ from sqlalchemy import text, func
 from sqlalchemy.orm import joinedload
 
 from knowledge_graph.models import Entity, Relationship, AnalysisBlueprint
-from setting.db import SessionLocal
+from setting.db import SessionLocal, db_manager
 from llm.embedding import get_text_embedding
 
 logger = logging.getLogger(__name__)
 
 
 class NarrativeGraphQuery:
-    """Query interface for narrative knowledge graphs"""
+    """Query interface for narrative knowledge graphs with multi-database support"""
 
-    def __init__(self):
-        pass
+    def __init__(self, database_uri: Optional[str] = None):
+        """
+        Initialize query interface for specific database.
+
+        Args:
+            database_uri: Database URI to query from. None or empty string means local database.
+        """
+        self.database_uri = database_uri
+        self.session_factory = db_manager.get_session_factory(database_uri)
+        self.is_local = db_manager.is_local_mode(database_uri)
 
     def get_topic_blueprint(self, topic_name: str) -> Optional[AnalysisBlueprint]:
-        """Get the latest analysis blueprint for a client"""
-        with SessionLocal() as db:
+        """Get the latest analysis blueprint for a topic"""
+        with self.session_factory() as db:
             return (
                 db.query(AnalysisBlueprint)
                 .filter(AnalysisBlueprint.topic_name.like(f"%{topic_name}%"))
@@ -28,8 +36,8 @@ class NarrativeGraphQuery:
             )
 
     def get_topic_entities(self, topic_name: str) -> pd.DataFrame:
-        """Get all entities for a specific client"""
-        with SessionLocal() as db:
+        """Get all entities for a specific topic"""
+        with self.session_factory() as db:
             query = text(
                 """
                 SELECT 
@@ -48,8 +56,8 @@ class NarrativeGraphQuery:
             return pd.DataFrame(result.fetchall())
 
     def get_topic_relationships(self, topic_name: str) -> pd.DataFrame:
-        """Get all relationships for a specific client"""
-        with SessionLocal() as db:
+        """Get all relationships for a specific topic"""
+        with self.session_factory() as db:
             query = text(
                 """
                 SELECT 
@@ -71,13 +79,14 @@ class NarrativeGraphQuery:
             return pd.DataFrame(result.fetchall())
 
     def export_topic_graph_to_json(self, topic_name: str) -> Dict:
-        """Export complete client knowledge graph to JSON format"""
+        """Export complete topic knowledge graph to JSON format"""
         entities_df = self.get_topic_entities(topic_name)
         relationships_df = self.get_topic_relationships(topic_name)
         blueprint = self.get_topic_blueprint(topic_name)
 
         return {
             "topic_name": topic_name,
+            "database_uri": "local" if self.is_local else "external",
             "blueprint": {
                 "suggested_entity_types": (
                     blueprint.suggested_entity_types if blueprint else []
@@ -99,22 +108,26 @@ class NarrativeGraphQuery:
 
 
 # Convenience functions
-def query_topic_graph(topic_name: str) -> Dict:
-    """Quick function to get complete client graph overview"""
-    query = NarrativeGraphQuery()
+def query_topic_graph(topic_name: str, database_uri: Optional[str] = None) -> Dict:
+    """Quick function to get complete topic graph overview from specified database"""
+    query = NarrativeGraphQuery(database_uri)
     return query.export_topic_graph_to_json(topic_name)
 
 
 def search_relationships_by_vector_similarity(
-    query: str, top_k: int = 10, similarity_threshold: float = 0.6
+    query: str,
+    top_k: int = 10,
+    similarity_threshold: float = 0.6,
+    database_uri: Optional[str] = None,
 ) -> pd.DataFrame:
     """
-    Search relationships by vector similarity to query text.
+    Search relationships by vector similarity to query text from specified database.
 
     Args:
         query: The query text to search for
         top_k: Number of top similar relationships to return
         similarity_threshold: Minimum similarity score (0-1)
+        database_uri: Database URI to search from. None means local database.
 
     Returns:
         DataFrame with relationships and entities, ordered by similarity
@@ -122,7 +135,8 @@ def search_relationships_by_vector_similarity(
     try:
         # Generate embedding for the query
         query_embedding = get_text_embedding(query)
-        with SessionLocal() as db:
+        session_factory = db_manager.get_session_factory(database_uri)
+        with session_factory() as db:
             # Build the base query with vector similarity search
             base_query = """
                 SELECT 
@@ -160,7 +174,7 @@ def search_relationships_by_vector_similarity(
             ]
 
             rows = result.fetchall()
-            logger.info("found rows", len(rows))
+            logger.info(f"found rows: {len(rows)}")
             df = pd.DataFrame(rows, columns=columns)
 
             # Round similarity scores for better readability

@@ -224,15 +224,21 @@ Now, please generate the analysis blueprint for {topic_name}.
                         f"Saving skeletal graph with blueprint for {topic_name}"
                     )
 
+                processing_instructions_data = blueprint_data.get(
+                    "processing_instructions", ""
+                )
+                if isinstance(processing_instructions_data, list):
+                    processing_instructions = "\n".join(processing_instructions_data)
+                else:
+                    processing_instructions = str(processing_instructions_data)
+
                 blueprint = AnalysisBlueprint(
                     topic_name=topic_name,
                     suggested_entity_types=blueprint_data.get(
                         "suggested_entity_types", []
                     ),
                     key_narrative_themes=blueprint_data.get("key_narrative_themes", []),
-                    processing_instructions=blueprint_data.get(
-                        "processing_instructions", ""
-                    ),
+                    processing_instructions=processing_instructions,
                     attributes=attributes,
                 )
 
