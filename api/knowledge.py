@@ -505,8 +505,8 @@ async def upload_documents(
 
 @router.post("/trigger-processing", response_model=APIResponse)
 async def trigger_processing(
-    topic_name: str,
-    database_uri: Optional[str] = None,
+    topic_name: str = Form(..., description="Name of the topic to trigger processing for"),
+    database_uri: Optional[str] = Form(None, description="Database URI to filter tasks (optional)"),
 ) -> JSONResponse:
     """
     Trigger processing for uploaded documents in a topic.
