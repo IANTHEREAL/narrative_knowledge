@@ -27,6 +27,25 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/knowledge", tags=["knowledge"])
 
+
+def log_sql_query(query, query_name="SQL Query"):
+    """
+    Log the SQL statement for a SQLAlchemy query.
+
+    Args:
+        query: SQLAlchemy query object
+        query_name: Optional name for the query for logging purposes
+    """
+    try:
+        # Try to compile with literal binds to show actual values
+        compiled_query = query.statement.compile(compile_kwargs={"literal_binds": True})
+        logger.info(f"{query_name}: {compiled_query}")
+    except Exception as e:
+        # Fallback to basic string representation if compile fails
+        logger.info(f"{query_name} (basic): {str(query)}")
+        logger.debug(f"SQL compile error: {e}")
+
+
 # Configuration
 UPLOAD_DIR = Path("uploads")
 ALLOWED_EXTENSIONS = {".pdf", ".md", ".txt", ".sql"}
@@ -36,6 +55,7 @@ MAX_FILE_SIZE = 30 * 1024 * 1024  # 30MB
 def _ensure_upload_dir() -> None:
     """Ensure upload directory exists."""
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
 
 def _validate_file(file: UploadFile) -> None:
     """
@@ -483,7 +503,7 @@ async def upload_documents(
     return JSONResponse(status_code=status.HTTP_200_OK, content=response.dict())
 
 
-@router.post("/trigger-processing/{topic_name}", response_model=APIResponse)
+@router.post("/trigger-processing", response_model=APIResponse)
 async def trigger_processing(
     topic_name: str,
     database_uri: Optional[str] = None,
@@ -512,19 +532,16 @@ async def trigger_processing(
 
         with SessionLocal() as db:
             # Find uploaded documents for this topic
-            uploaded_tasks = (
-                db.query(GraphBuildStatus)
-                .filter(
-                    and_(
-                        GraphBuildStatus.topic_name == topic_name,
-                        GraphBuildStatus.status == "uploaded",
-                        GraphBuildStatus.external_database_uri == external_db_uri,
-                    )
+            # Build the query
+            query = db.query(GraphBuildStatus).filter(
+                and_(
+                    GraphBuildStatus.topic_name == topic_name,
+                    GraphBuildStatus.status == "uploaded",
+                    GraphBuildStatus.external_database_uri == external_db_uri,
                 )
-                .all()
             )
 
-            if not uploaded_tasks:
+            if not query.count():
                 return JSONResponse(
                     status_code=status.HTTP_200_OK,
                     content=APIResponse(
@@ -574,6 +591,7 @@ async def trigger_processing(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to trigger processing: {str(e)}",
         )
+
 
 @router.get("/topics", response_model=APIResponse)
 async def list_topics(
