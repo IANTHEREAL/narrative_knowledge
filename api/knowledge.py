@@ -4,14 +4,16 @@ Knowledge document upload API endpoints.
 
 import logging
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Optional
+from setting.db import SessionLocal, db_manager
+from sqlalchemy import or_, and_, func, case
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status
 from fastapi.responses import JSONResponse
+
 
 from api.models import (
     DocumentMetadata,
     ProcessedDocument,
-    DocumentInfo,
     APIResponse,
     TopicSummary,
 )
@@ -19,9 +21,6 @@ from knowledge_graph.knowledge import KnowledgeBuilder
 from knowledge_graph.models import (
     GraphBuildStatus,
 )
-from typing import List
-from setting.db import SessionLocal, db_manager
-from sqlalchemy import or_, and_, func, case
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +29,7 @@ router = APIRouter(prefix="/api/v1/knowledge", tags=["knowledge"])
 # Configuration
 UPLOAD_DIR = Path("uploads")
 ALLOWED_EXTENSIONS = {".pdf", ".md", ".txt", ".sql"}
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+MAX_FILE_SIZE = 30 * 1024 * 1024  # 30MB
 
 
 def _ensure_upload_dir() -> None:
@@ -40,7 +39,7 @@ def _ensure_upload_dir() -> None:
 
 def _validate_file(file: UploadFile) -> None:
     """
-    Validate uploaded file including filename, type, and size.
+    Validate uploaded file including filename and type.
 
     Args:
         file: The uploaded file to validate
@@ -60,15 +59,30 @@ def _validate_file(file: UploadFile) -> None:
             detail=f"File type {file_ext} not supported. Allowed: {', '.join(ALLOWED_EXTENSIONS)}",
         )
 
-    # Check file size
-    file.file.seek(0, 2)  # Seek to end of file
-    file_size = file.file.tell()
-    file.file.seek(0)  # Reset to beginning
 
-    if file_size > MAX_FILE_SIZE:
+def _validate_batch_file_size(files: List[UploadFile]) -> None:
+    """
+    Validate that the total size of all uploaded files does not exceed the limit.
+
+    Args:
+        files: List of uploaded files to validate
+
+    Raises:
+        HTTPException: If total file size exceeds the limit
+    """
+    total_size = 0
+
+    for file in files:
+        # Get file size
+        file.file.seek(0, 2)  # Seek to end of file
+        file_size = file.file.tell()
+        file.file.seek(0)  # Reset to beginning
+        total_size += file_size
+
+    if total_size > MAX_FILE_SIZE:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"File size exceeds {MAX_FILE_SIZE // (1024*1024)}MB limit",
+            detail=f"Total file size ({total_size // (1024*1024)}MB) exceeds {MAX_FILE_SIZE // (1024*1024)}MB limit",
         )
 
 
@@ -219,8 +233,9 @@ async def upload_documents(
     Upload and process documents for knowledge graph building.
 
     This endpoint accepts multiple files with corresponding links and processes them
-    through the knowledge extraction pipeline. Each file is validated, saved, and processed
-    individually to extract knowledge content. A build status record is created for each document.
+    through the knowledge extraction pipeline. Files are validated for type and total size,
+    saved, and processed individually to extract knowledge content. A build status record is
+    created for each document. The total size of all uploaded files must not exceed 30MB.
 
     Args:
         files: List of files to upload (supports pdf, md, txt, sql)
@@ -232,7 +247,7 @@ async def upload_documents(
         JSON response with batch upload results including all processed document information
 
     Raises:
-        HTTPException: If validation fails or processing errors occur
+        HTTPException: If validation fails (including total file size exceeds limit) or processing errors occur
     """
 
     if not files:
@@ -257,6 +272,9 @@ async def upload_documents(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="All links must be unique"
         )
+
+    # Validate total file size
+    _validate_batch_file_size(files)
 
     processed_documents: List[ProcessedDocument] = []
     failed_uploads = []
@@ -371,29 +389,17 @@ async def list_topics(
                 GraphBuildStatus.external_database_uri,
                 func.count(GraphBuildStatus.source_id).label("total_documents"),
                 func.sum(
-                    case(
-                        (GraphBuildStatus.status == "pending", 1),
-                        else_=0
-                    )
+                    case((GraphBuildStatus.status == "pending", 1), else_=0)
                 ).label("pending_count"),
                 func.sum(
-                    case(
-                        (GraphBuildStatus.status == "processing", 1),
-                        else_=0
-                    )
+                    case((GraphBuildStatus.status == "processing", 1), else_=0)
                 ).label("processing_count"),
                 func.sum(
-                    case(
-                        (GraphBuildStatus.status == "completed", 1),
-                        else_=0
-                    )
+                    case((GraphBuildStatus.status == "completed", 1), else_=0)
                 ).label("completed_count"),
-                func.sum(
-                    case(
-                        (GraphBuildStatus.status == "failed", 1),
-                        else_=0
-                    )
-                ).label("failed_count"),
+                func.sum(case((GraphBuildStatus.status == "failed", 1), else_=0)).label(
+                    "failed_count"
+                ),
                 func.max(GraphBuildStatus.updated_at).label("latest_update"),
             )
 
@@ -420,7 +426,11 @@ async def list_topics(
                     latest_update=(
                         stats.latest_update.isoformat() if stats.latest_update else None
                     ),
-                    database_uri="local" if db_manager.is_local_mode(stats.external_database_uri) else "external",
+                    database_uri=(
+                        "local"
+                        if db_manager.is_local_mode(stats.external_database_uri)
+                        else "external"
+                    ),
                 )
                 topic_summaries.append(topic_summary)
 
