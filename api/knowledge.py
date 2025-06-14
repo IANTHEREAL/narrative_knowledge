@@ -3,8 +3,10 @@ Knowledge document upload API endpoints.
 """
 
 import logging
+import json
+import uuid
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from setting.db import SessionLocal, db_manager
 from sqlalchemy import or_, and_, func, case
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status
@@ -17,7 +19,6 @@ from api.models import (
     APIResponse,
     TopicSummary,
 )
-from knowledge_graph.knowledge import KnowledgeBuilder
 from knowledge_graph.models import (
     GraphBuildStatus,
 )
@@ -35,7 +36,6 @@ MAX_FILE_SIZE = 30 * 1024 * 1024  # 30MB
 def _ensure_upload_dir() -> None:
     """Ensure upload directory exists."""
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-
 
 def _validate_file(file: UploadFile) -> None:
     """
@@ -86,16 +86,27 @@ def _validate_batch_file_size(files: List[UploadFile]) -> None:
         )
 
 
-def _save_uploaded_file(file: UploadFile, topic_name: str) -> Path:
+def _save_uploaded_file_with_metadata(
+    file: UploadFile, metadata: DocumentMetadata
+) -> Tuple[Path, bool, str]:
     """
-    Save uploaded file to disk in its own directory.
-    Structure: UPLOAD_DIR/filename/filename
+    Save uploaded file with metadata and handle duplicate detection.
+
+    Directory structure: UPLOAD_DIR/topic_name/filename/
+    Contains: filename, document_metadata.json
+
+    If same directory exists with identical metadata, return existing path.
+    If same directory exists with different metadata, create new versioned directory.
 
     Args:
         file: The uploaded file to save
+        metadata: Document metadata to save alongside the file
 
     Returns:
-        Path to the saved file
+        Tuple of (storage_directory_path, is_existing_file, source_id)
+        - storage_directory_path: Path to the directory containing file and metadata
+        - is_existing_file: True if file with same metadata already exists
+        - source_id: Pre-generated unique identifier for the document
 
     Raises:
         HTTPException: If file saving fails
@@ -103,25 +114,102 @@ def _save_uploaded_file(file: UploadFile, topic_name: str) -> Path:
     try:
         _ensure_upload_dir()
 
-        # Create directory structure: UPLOAD_DIR/filename
         filename = file.filename
-        file_dir = UPLOAD_DIR / topic_name / filename
-        if file_dir.exists():
-            return file_dir / filename
+        base_name = Path(filename).stem
+        base_dir = UPLOAD_DIR / metadata.topic_name / base_name
 
-        # Create the file directory
-        file_dir.mkdir(parents=True, exist_ok=True)
+        # Check if directory with same name exists
+        if base_dir.exists():
+            metadata_file = base_dir / "document_metadata.json"
+            if metadata_file.exists():
+                # Compare existing metadata with current metadata
+                try:
+                    existing_metadata = json.loads(
+                        metadata_file.read_text(encoding="utf-8")
+                    )
+                    current_metadata = metadata.dict()
 
-        # Save file inside its directory
-        file_path = file_dir / filename
+                    # Compare core metadata fields that determine document uniqueness
+                    # We compare: doc_link, topic_name, database_uri
+                    metadata_matches = (
+                        existing_metadata.get("doc_link")
+                        == current_metadata.get("doc_link")
+                        and existing_metadata.get("topic_name")
+                        == current_metadata.get("topic_name")
+                        and existing_metadata.get("database_uri")
+                        == current_metadata.get("database_uri")
+                    )
 
-        # Write file content
+                    if metadata_matches:
+                        # Same metadata, return existing directory
+                        logger.info(
+                            f"File with identical metadata already exists: {base_dir}"
+                        )
+
+                        # Extract source_id from existing metadata
+                        existing_source_id = existing_metadata.get("source_id")
+                        if not existing_source_id:
+                            # This should not happen with proper design - existing files should have source_id
+                            raise HTTPException(
+                                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                detail=f"Existing file at {base_dir} has corrupted metadata (missing source_id). Please contact administrator.",
+                            )
+
+                        return base_dir, True, existing_source_id
+                    else:
+                        # Different metadata, create versioned directory
+                        counter = 1
+                        while True:
+                            versioned_dir = (
+                                UPLOAD_DIR
+                                / metadata.topic_name
+                                / f"{base_name}_v{counter}"
+                            )
+                            if not versioned_dir.exists():
+                                base_dir = versioned_dir
+                                break
+                            counter += 1
+                        logger.info(
+                            f"Creating versioned directory for different metadata: {base_dir}"
+                        )
+                except json.JSONDecodeError:
+                    logger.warning(
+                        f"Invalid metadata file found at {metadata_file}, creating new version"
+                    )
+                    # Create versioned directory if metadata file is corrupted
+                    counter = 1
+                    while True:
+                        versioned_dir = (
+                            UPLOAD_DIR / metadata.topic_name / f"{base_name}_v{counter}"
+                        )
+                        if not versioned_dir.exists():
+                            base_dir = versioned_dir
+                            break
+                        counter += 1
+
+        # Create directory
+        base_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save the uploaded file
+        file_path = base_dir / filename
         with open(file_path, "wb") as buffer:
             content = file.file.read()
             buffer.write(content)
 
-        logger.info(f"File saved successfully: {file_path}")
-        return file_path
+        # Generate unique source_id for this document
+        source_id = str(uuid.uuid4())
+
+        # Save metadata as JSON
+        metadata_file = base_dir / "document_metadata.json"
+        metadata_dict = metadata.dict()
+        metadata_dict["file_name"] = filename
+        metadata_dict["source_id"] = source_id  # Pre-generated source_id
+
+        with open(metadata_file, "w", encoding="utf-8") as f:
+            json.dump(metadata_dict, f, indent=2, ensure_ascii=False)
+
+        logger.info(f"File and metadata saved successfully: {base_dir}")
+        return base_dir, False, source_id
 
     except HTTPException:
         raise
@@ -133,71 +221,60 @@ def _save_uploaded_file(file: UploadFile, topic_name: str) -> Path:
         )
 
 
-def _process_document(file_path: Path, metadata: DocumentMetadata) -> ProcessedDocument:
+def _create_processing_task(
+    storage_directory: Path, metadata: DocumentMetadata, source_id: str
+) -> None:
     """
-    Process uploaded document using knowledge builder and create build status record.
+    Create a background processing task for uploaded document.
+
+    This function creates a GraphBuildStatus record that will be picked up
+    by the GraphBuildDaemon for asynchronous processing.
 
     Args:
-        file_path: Path to the uploaded file
-        metadata: Document metadata including doc_link, topic_name, and database_uri
-
-    Returns:
-        ProcessedDocument with extraction results
+        storage_directory: Path to directory containing file and metadata
+        metadata: Document metadata
+        source_id: Pre-generated unique identifier for the document
 
     Raises:
-        Exception: If document processing fails
+        HTTPException: If task creation fails
     """
     try:
-        # Get appropriate session factory for the target database
-        target_session_factory = db_manager.get_session_factory(metadata.database_uri)
-
-        # Prepare attributes for knowledge extraction
-        attributes = {"doc_link": metadata.doc_link, "topic_name": metadata.topic_name}
-
-        # Extract knowledge using knowledge builder with target database
-        kb_builder_instance = KnowledgeBuilder(session_factory=target_session_factory)
-        result = kb_builder_instance.extract_knowledge(str(file_path), attributes)
-
-        if result["status"] != "success":
-            raise Exception(
-                f"Knowledge extraction failed: {result.get('error', 'Unknown error')}"
-            )
-
-        # Handle build status record creation based on mode
-        if db_manager.is_local_mode(metadata.database_uri):
-            # Local mode: create record in local database only
-            kb_builder_instance.create_build_status_record(
-                result["source_id"], metadata.topic_name
-            )
-        else:
-            # Multi-database mode: create record in user database and sync to local
-            # 1. Create record in user database
-            kb_builder_instance.create_build_status_record(
-                result["source_id"],
-                metadata.topic_name,
-            )
-
-            # 2. Create sync record in local database for task scheduling
-            # TODO: sync with external database
-            local_kb_builder = KnowledgeBuilder(session_factory=SessionLocal)
-            local_kb_builder.create_build_status_record(
-                result["source_id"],
-                metadata.topic_name,
-                external_database_uri=metadata.database_uri,
-            )
-
-        return ProcessedDocument(
-            id=result["source_id"],
-            name=result["source_name"],
-            file_path=str(file_path),
-            doc_link=metadata.doc_link,
-            file_type=_get_file_type(file_path),
-            status="processed",
+        # Create task record in local database only
+        # All task scheduling is centralized in local database
+        external_db_uri = (
+            ""
+            if db_manager.is_local_mode(metadata.database_uri)
+            else metadata.database_uri
         )
 
+        with SessionLocal() as db:
+            build_status = GraphBuildStatus(
+                topic_name=metadata.topic_name,
+                source_id=source_id,
+                external_database_uri=external_db_uri,
+                storage_directory=str(storage_directory),
+                status="uploaded",
+            )
+            db.add(build_status)
+            db.commit()
+
+        if db_manager.is_local_mode(metadata.database_uri):
+            logger.info(
+                f"Created local knowledge graph task: {source_id} in {storage_directory}"
+            )
+        else:
+            logger.info(
+                f"Created external-db knowledge graph task: {source_id} in {storage_directory}"
+            )
+
+        return
+
     except Exception as e:
-        logger.error(f"Failed to process document {file_path}: {e}")
-        raise
+        logger.error(f"Failed to create processing task for {storage_directory}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create processing task: {str(e)}",
+        )
 
 
 def _get_file_type(file_path: Path) -> str:
@@ -230,12 +307,18 @@ async def upload_documents(
     ),
 ) -> JSONResponse:
     """
-    Upload and process documents for knowledge graph building.
+    Upload documents for asynchronous knowledge graph building.
 
-    This endpoint accepts multiple files with corresponding links and processes them
-    through the knowledge extraction pipeline. Files are validated for type and total size,
-    saved, and processed individually to extract knowledge content. A build status record is
-    created for each document. The total size of all uploaded files must not exceed 30MB.
+    This endpoint accepts multiple files with corresponding links and saves them to storage
+    with metadata for background processing. Files are validated for type and total size,
+    then saved to individual directories with metadata. Processing tasks are created for
+    background execution by the GraphBuildDaemon. The total size of all uploaded files
+    must not exceed 30MB.
+
+    Duplicate Detection:
+    - If a file with identical metadata already exists, returns 'already_exists' status
+    - If a file exists with different metadata, creates a versioned directory
+    - Use the /topics API to check processing status
 
     Args:
         files: List of files to upload (supports pdf, md, txt, sql)
@@ -244,10 +327,12 @@ async def upload_documents(
         database_uri: Database connection string (optional, uses local if not provided)
 
     Returns:
-        JSON response with batch upload results including all processed document information
+        JSON response with upload results and task creation status.
+        Documents will have status 'uploaded' for new uploads or 'already_exists' for duplicates.
+        Use trigger-processing API to change status from 'uploaded' to 'pending' when ready to process.
 
     Raises:
-        HTTPException: If validation fails (including total file size exceeds limit) or processing errors occur
+        HTTPException: If validation fails (including total file size exceeds limit) or upload errors occur
     """
 
     if not files:
@@ -280,7 +365,7 @@ async def upload_documents(
     failed_uploads = []
 
     # Validate database connection if provided
-    if database_uri:
+    if database_uri and not db_manager.is_local_mode(database_uri):
         try:
             if not db_manager.validate_database_connection(database_uri):
                 raise HTTPException(
@@ -296,24 +381,49 @@ async def upload_documents(
     # Process each file with its corresponding link individually
     for file, link in zip(files, links):
         try:
-            # Validate file
+            # Validate file format and name
             _validate_file(file)
-
-            # Save file
-            file_path = _save_uploaded_file(file, topic_name)
 
             # Create metadata for this specific file with its corresponding link
             file_metadata = DocumentMetadata(
                 doc_link=link, topic_name=topic_name, database_uri=database_uri
             )
 
-            # Process document individually
-            processed_doc = _process_document(file_path, file_metadata)
-            processed_documents.append(processed_doc)
-
-            logger.info(
-                f"Successfully processed document: {file.filename} with link: {link}"
+            # Save file with metadata and check for duplicates
+            storage_directory, is_existing, source_id = (
+                _save_uploaded_file_with_metadata(file, file_metadata)
             )
+
+            if is_existing:
+                # File with same metadata already exists
+                processed_doc = ProcessedDocument(
+                    id=source_id,  # Use the source_id from existing metadata
+                    name=file.filename or "unknown",
+                    file_path=str(storage_directory),
+                    doc_link=link,
+                    file_type=_get_file_type(Path(file.filename or "unknown")),
+                    status="already_exists",
+                )
+                logger.info(
+                    f"File with identical metadata already exists: {file.filename}"
+                )
+            else:
+                # Create new processing task using pre-generated source_id
+                _create_processing_task(storage_directory, file_metadata, source_id)
+
+                processed_doc = ProcessedDocument(
+                    id=source_id,
+                    name=file.filename or "unknown",
+                    file_path=str(storage_directory),
+                    doc_link=link,
+                    file_type=_get_file_type(Path(file.filename or "unknown")),
+                    status="uploaded",
+                )
+                logger.info(
+                    f"Created processing task for document: {file.filename} with ID: {source_id}"
+                )
+
+            processed_documents.append(processed_doc)
 
         except HTTPException:
             # Re-raise HTTP exceptions (validation errors)
@@ -326,9 +436,7 @@ async def upload_documents(
                 "reason": str(e),
             }
             failed_uploads.append(error_detail)
-            logger.error(
-                f"Failed to process file {file.filename} with link {link}: {e}"
-            )
+            logger.error(f"Failed to upload file {file.filename} with link {link}: {e}")
 
     # If all files failed, return error
     if not processed_documents and failed_uploads:
@@ -350,14 +458,122 @@ async def upload_documents(
         "success_rate": len(processed_documents) / len(files) if files else 0,
     }
 
+    # Count different types of results
+    uploaded_count = sum(1 for doc in processed_documents if doc.status == "uploaded")
+    existing_count = sum(
+        1 for doc in processed_documents if doc.status == "already_exists"
+    )
+
+    # Create appropriate message based on results
+    if uploaded_count > 0 and existing_count > 0:
+        message = f"Batch upload completed: {uploaded_count} documents uploaded successfully, {existing_count} already exist. Use trigger-processing API to start processing when ready."
+    elif uploaded_count > 0:
+        message = f"Batch upload completed: {uploaded_count} documents uploaded successfully. Use trigger-processing API to start processing when ready."
+    elif existing_count > 0:
+        message = f"Batch upload completed: {existing_count} documents already exist with same metadata. Check /topics API for current status."
+    else:
+        message = "Batch upload completed."
+
     response = APIResponse(
         status="success",
-        message=f"Batch upload completed: {len(processed_documents)}/{len(files)} documents processed successfully",
+        message=message,
         data=response_data,
     )
 
     return JSONResponse(status_code=status.HTTP_200_OK, content=response.dict())
 
+
+@router.post("/trigger-processing/{topic_name}", response_model=APIResponse)
+async def trigger_processing(
+    topic_name: str,
+    database_uri: Optional[str] = None,
+) -> JSONResponse:
+    """
+    Trigger processing for uploaded documents in a topic.
+
+    Changes status from 'uploaded' to 'pending' for all uploaded documents
+    in the specified topic, which will be picked up by the GraphBuildDaemon.
+
+    Args:
+        topic_name: Name of the topic to trigger processing for
+        database_uri: Database URI to filter tasks (optional)
+
+    Returns:
+        JSON response with the number of documents queued for processing
+
+    Raises:
+        HTTPException: If triggering fails
+    """
+    try:
+        # Determine the external_database_uri for filtering
+        external_db_uri = (
+            "" if db_manager.is_local_mode(database_uri) else database_uri or ""
+        )
+
+        with SessionLocal() as db:
+            # Find uploaded documents for this topic
+            uploaded_tasks = (
+                db.query(GraphBuildStatus)
+                .filter(
+                    and_(
+                        GraphBuildStatus.topic_name == topic_name,
+                        GraphBuildStatus.status == "uploaded",
+                        GraphBuildStatus.external_database_uri == external_db_uri,
+                    )
+                )
+                .all()
+            )
+
+            if not uploaded_tasks:
+                return JSONResponse(
+                    status_code=status.HTTP_200_OK,
+                    content=APIResponse(
+                        status="success",
+                        message=f"No uploaded documents found for topic '{topic_name}'",
+                        data={"triggered_count": 0},
+                    ).dict(),
+                )
+
+            # Update status to pending
+            triggered_count = (
+                db.query(GraphBuildStatus)
+                .filter(
+                    and_(
+                        GraphBuildStatus.topic_name == topic_name,
+                        GraphBuildStatus.status == "uploaded",
+                        GraphBuildStatus.external_database_uri == external_db_uri,
+                    )
+                )
+                .update(
+                    {
+                        "status": "pending",
+                        "scheduled_at": func.current_timestamp(),
+                        "updated_at": func.current_timestamp(),
+                    },
+                    synchronize_session=False,
+                )
+            )
+
+            db.commit()
+
+            logger.info(
+                f"Triggered processing for {triggered_count} documents in topic '{topic_name}'"
+            )
+
+            response = APIResponse(
+                status="success",
+                message=f"Successfully triggered processing for {triggered_count} documents in topic '{topic_name}'. Processing will begin shortly.",
+                data={"triggered_count": triggered_count, "topic_name": topic_name},
+            )
+
+            return JSONResponse(status_code=status.HTTP_200_OK, content=response.dict())
+
+    except Exception as e:
+        logger.error(f"Failed to trigger processing for topic '{topic_name}': {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to trigger processing: {str(e)}",
+        )
 
 @router.get("/topics", response_model=APIResponse)
 async def list_topics(
@@ -392,6 +608,9 @@ async def list_topics(
                     case((GraphBuildStatus.status == "pending", 1), else_=0)
                 ).label("pending_count"),
                 func.sum(
+                    case((GraphBuildStatus.status == "uploaded", 1), else_=0)
+                ).label("uploaded_count"),
+                func.sum(
                     case((GraphBuildStatus.status == "processing", 1), else_=0)
                 ).label("processing_count"),
                 func.sum(
@@ -420,6 +639,7 @@ async def list_topics(
                     topic_name=stats.topic_name,
                     total_documents=stats.total_documents,
                     pending_count=stats.pending_count or 0,
+                    uploaded_count=stats.uploaded_count or 0,
                     processing_count=stats.processing_count or 0,
                     completed_count=stats.completed_count or 0,
                     failed_count=stats.failed_count or 0,

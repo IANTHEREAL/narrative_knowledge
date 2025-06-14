@@ -24,7 +24,13 @@ class KnowledgeBuilder:
         """
         self.SessionLocal = session_factory or SessionLocal
 
-    def extract_knowledge(self, source_path: str, attributes: Dict[str, Any], **kwargs):
+    def extract_knowledge(
+        self,
+        source_path: str,
+        attributes: Dict[str, Any],
+        source_id: str = None,
+        **kwargs,
+    ):
         # Extract basic info of source
         doc_link = attributes.get("doc_link", None)
         if doc_link is None or doc_link == "":
@@ -84,14 +90,21 @@ class KnowledgeBuilder:
                     "source_name": existing_source.name,
                 }
             else:
-                source_data = SourceData(
-                    name=name,
-                    content=full_content,
-                    link=doc_link,
-                    source_type=source_type,
-                    hash=source_hash,
-                    attributes=attributes,
-                )
+                # Create SourceData with pre-set ID if provided
+                source_data_kwargs = {
+                    "name": name,
+                    "content": full_content,
+                    "link": doc_link,
+                    "source_type": source_type,
+                    "hash": source_hash,
+                    "attributes": attributes,
+                }
+
+                # Use pre-set source_id if provided (for consistency with task tracking)
+                if source_id:
+                    source_data_kwargs["id"] = source_id
+
+                source_data = SourceData(**source_data_kwargs)
 
                 db.add(source_data)
                 db.commit()

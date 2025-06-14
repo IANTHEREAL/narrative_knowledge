@@ -285,10 +285,13 @@ class GraphBuildStatus(Base):
     external_database_uri = Column(
         String(512), nullable=False, default=""
     )  # Track external database
+    storage_directory = Column(
+        String(512), nullable=True
+    )  # Directory path where document and metadata are stored
     status = Column(
-        Enum("pending", "processing", "completed", "failed"),
+        Enum("uploaded", "pending", "processing", "completed", "failed"),
         nullable=False,
-        default="pending",
+        default="uploaded",
     )
     created_at = Column(DateTime, default=func.current_timestamp())
     updated_at = Column(

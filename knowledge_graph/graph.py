@@ -525,7 +525,9 @@ Now, please generate the structural triplets for {topic_name}.
             return triplets
 
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse structural JSON from document content: {e}. response {json_str}")
+            logger.error(
+                f"Failed to parse structural JSON from document content: {e}. response {json_str}"
+            )
             raise RuntimeError(
                 f"Failed to parse structural JSON from document content: {e}"
             )

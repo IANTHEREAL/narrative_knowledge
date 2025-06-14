@@ -51,6 +51,7 @@ class TopicSummary(BaseModel):
 
     topic_name: str
     total_documents: int
+    uploaded_count: int
     pending_count: int
     processing_count: int
     completed_count: int
