@@ -74,6 +74,7 @@ class GraphBuildDaemon:
             return
 
         # Step 2: Process the build graph
+        logger.info(f"Start to process the build graph: {task_info["topic_name"]}")
         topic_name = task_info["topic_name"]
         external_database_uri = task_info["external_database_uri"]
         task_data = task_info["task_data"]
@@ -96,6 +97,8 @@ class GraphBuildDaemon:
 
             if not earliest_task:
                 return None
+
+            logger.info(f"Start to collect earliest task: {earliest_task}")
 
             topic_name = earliest_task.topic_name
             external_database_uri = earliest_task.external_database_uri
