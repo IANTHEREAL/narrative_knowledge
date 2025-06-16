@@ -433,6 +433,9 @@ class GraphBuildDaemon:
                 # Add to successful extractions using the consistent temp_token_id
                 extracted_sources.append(
                     {
+                        "temp_token_id": task[
+                            "temp_token_id"
+                        ],  # Keep temp_token_id for status update
                         "source_id": result["source_id"],
                         "source_name": result["source_name"],
                         "source_content": result["source_content"],

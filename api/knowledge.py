@@ -108,7 +108,7 @@ def _validate_batch_file_size(files: List[UploadFile]) -> None:
 
 
 def _save_file_and_metadata(
-    file: UploadFile, metadata: DocumentMetadata, base_dir: Path, source_id: str
+    file: UploadFile, metadata: DocumentMetadata, base_dir: Path
 ) -> None:
     """
     Helper function to save file and metadata to directory.
@@ -117,7 +117,6 @@ def _save_file_and_metadata(
         file: The uploaded file to save
         metadata: Document metadata
         base_dir: Directory to save files to
-        source_id: Source ID to use in metadata
     """
     # Create directory
     base_dir.mkdir(parents=True, exist_ok=True)
@@ -132,7 +131,6 @@ def _save_file_and_metadata(
     metadata_file = base_dir / "document_metadata.json"
     metadata_dict = metadata.dict()
     metadata_dict["file_name"] = file.filename
-    metadata_dict["source_id"] = source_id
 
     with open(metadata_file, "w", encoding="utf-8") as f:
         json.dump(metadata_dict, f, indent=2, ensure_ascii=False)
@@ -160,29 +158,7 @@ def _get_versioned_directory(base_dir: Path) -> Path:
 
 def _save_uploaded_file_with_metadata(
     file: UploadFile, metadata: DocumentMetadata
-) -> Tuple[Path, bool, str]:
-    """
-    Save uploaded file with metadata and handle duplicate detection.
-
-    Directory structure: UPLOAD_DIR/topic_name/filename/
-    Contains: filename, document_metadata.json
-
-    If same directory exists with identical metadata, return existing path.
-    If same directory exists with different metadata, create new versioned directory.
-
-    Args:
-        file: The uploaded file to save
-        metadata: Document metadata to save alongside the file
-
-    Returns:
-        Tuple of (storage_directory_path, is_existing_file, source_id)
-        - storage_directory_path: Path to the directory containing file and metadata
-        - is_existing_file: True if file with same metadata already exists
-        - source_id: Pre-generated unique identifier for the document
-
-    Raises:
-        HTTPException: If file saving fails
-    """
+) -> Tuple[Path, str]:
     try:
         _ensure_upload_dir()
 
@@ -202,96 +178,24 @@ def _save_uploaded_file_with_metadata(
             )
 
             if existing_source:
+                # Check if directory and metadata already exist
+                if not base_dir.exists():
+                    # Create versioned directory if base doesn't exist
+                    base_dir = _get_versioned_directory(base_dir)
+                    _save_file_and_metadata(file, metadata, base_dir)
+
                 logger.info(
                     f"Found existing SourceData with same doc_link: {metadata.doc_link}, "
-                    f"reusing source_id: {existing_source.id}"
+                    f"reusing source_id: {existing_source.id} as temp_token_id"
                 )
+                return base_dir, existing_source.id
 
-                # Check if we have a local file storage for this source
-                if base_dir.exists():
-                    metadata_file = base_dir / "document_metadata.json"
-                    if metadata_file.exists():
-                        try:
-                            existing_metadata = json.loads(
-                                metadata_file.read_text(encoding="utf-8")
-                            )
-                            # Update the existing metadata with the consistent source_id
-                            if existing_metadata.get("source_id") != existing_source.id:
-                                existing_metadata["source_id"] = existing_source.id
-                                with open(metadata_file, "w", encoding="utf-8") as f:
-                                    json.dump(
-                                        existing_metadata,
-                                        f,
-                                        indent=2,
-                                        ensure_ascii=False,
-                                    )
-                                logger.info(
-                                    f"Updated metadata file with consistent source_id: {existing_source.id}"
-                                )
-                        except json.JSONDecodeError:
-                            logger.warning(
-                                f"Invalid metadata file found at {metadata_file}"
-                            )
-
-                    return base_dir, True, existing_source.id
-                else:
-                    # Save file with existing source_id
-                    _save_file_and_metadata(
-                        file, metadata, base_dir, existing_source.id
-                    )
-                    logger.info(f"File saved with existing source_id: {base_dir}")
-                    return base_dir, False, existing_source.id
-
-        # Check if directory with same name exists for file-based duplicate detection
-        if base_dir.exists():
-            metadata_file = base_dir / "document_metadata.json"
-            if metadata_file.exists():
-                try:
-                    existing_metadata = json.loads(
-                        metadata_file.read_text(encoding="utf-8")
-                    )
-                    current_metadata = metadata.dict()
-
-                    # Compare core metadata fields that determine document uniqueness
-                    metadata_matches = (
-                        existing_metadata.get("doc_link")
-                        == current_metadata.get("doc_link")
-                        and existing_metadata.get("topic_name")
-                        == current_metadata.get("topic_name")
-                        and existing_metadata.get("database_uri")
-                        == current_metadata.get("database_uri")
-                    )
-
-                    if metadata_matches:
-                        # Same metadata, return existing directory
-                        logger.info(
-                            f"File with identical metadata already exists: {base_dir}"
-                        )
-                        existing_source_id = existing_metadata.get("source_id")
-                        if not existing_source_id:
-                            raise HTTPException(
-                                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                                detail=f"Existing file at {base_dir} has corrupted metadata (missing source_id). Please contact administrator.",
-                            )
-                        return base_dir, True, existing_source_id
-                    else:
-                        # Different metadata, create versioned directory
-                        base_dir = _get_versioned_directory(base_dir)
-                        logger.info(
-                            f"Creating versioned directory for different metadata: {base_dir}"
-                        )
-
-                except json.JSONDecodeError:
-                    logger.warning(
-                        f"Invalid metadata file found at {metadata_file}, creating new version"
-                    )
-                    base_dir = _get_versioned_directory(base_dir)
-
-        # Save new file with new source_id
-        source_id = str(uuid.uuid4())
-        _save_file_and_metadata(file, metadata, base_dir, source_id)
-        logger.info(f"File and metadata saved successfully: {base_dir}")
-        return base_dir, False, source_id
+            # New source - create directory and save
+            base_dir = _get_versioned_directory(base_dir)
+            temp_token_id = str(uuid.uuid4())
+            _save_file_and_metadata(file, metadata, base_dir)
+            logger.info(f"File and metadata saved successfully: {base_dir}")
+            return base_dir, temp_token_id
 
     except HTTPException:
         raise
@@ -304,7 +208,7 @@ def _save_uploaded_file_with_metadata(
 
 
 def _create_processing_task(
-    storage_directory: Path, metadata: DocumentMetadata, source_id: str
+    storage_directory: Path, metadata: DocumentMetadata, temp_token_id: str
 ) -> None:
     """
     Create a background processing task for uploaded document.
@@ -315,7 +219,7 @@ def _create_processing_task(
     Args:
         storage_directory: Path to directory containing file and metadata
         metadata: Document metadata
-        source_id: Pre-generated unique identifier for the document
+        temp_token_id: Pre-generated unique identifier for the document
 
     Raises:
         HTTPException: If task creation fails
@@ -332,7 +236,7 @@ def _create_processing_task(
         with SessionLocal() as db:
             build_status = GraphBuildStatus(
                 topic_name=metadata.topic_name,
-                source_id=source_id,
+                temp_token_id=temp_token_id,
                 external_database_uri=external_db_uri,
                 storage_directory=str(storage_directory),
                 status="uploaded",
@@ -342,11 +246,11 @@ def _create_processing_task(
 
         if db_manager.is_local_mode(metadata.database_uri):
             logger.info(
-                f"Created local knowledge graph task: {source_id} in {storage_directory}"
+                f"Created local knowledge graph task: {temp_token_id} in {storage_directory}"
             )
         else:
             logger.info(
-                f"Created external-db knowledge graph task: {source_id} in {storage_directory}"
+                f"Created external-db knowledge graph task: {temp_token_id} in {storage_directory}"
             )
 
         return
@@ -472,14 +376,29 @@ async def upload_documents(
             )
 
             # Save file with metadata and check for duplicates
-            storage_directory, is_existing, source_id = (
-                _save_uploaded_file_with_metadata(file, file_metadata)
+            storage_directory, temp_token_id = _save_uploaded_file_with_metadata(
+                file, file_metadata
             )
+
+            # check whether GraphBuildStatus exists for this temp_token_id, topic_name, database_uri
+            is_existing = False  # Initialize the variable
+            with SessionLocal() as db:
+                build_status = (
+                    db.query(GraphBuildStatus)
+                    .filter(
+                        GraphBuildStatus.temp_token_id == temp_token_id,
+                        GraphBuildStatus.topic_name == topic_name,
+                        GraphBuildStatus.external_database_uri == database_uri,
+                    )
+                    .first()
+                )
+                if build_status:
+                    is_existing = True
 
             if is_existing:
                 # File with same metadata already exists
                 processed_doc = ProcessedDocument(
-                    id=source_id,  # Use the source_id from existing metadata
+                    id=temp_token_id,
                     name=file.filename or "unknown",
                     file_path=str(storage_directory),
                     doc_link=link,
@@ -490,11 +409,10 @@ async def upload_documents(
                     f"File with identical metadata already exists: {file.filename}"
                 )
             else:
-                # Create new processing task using pre-generated source_id
-                _create_processing_task(storage_directory, file_metadata, source_id)
+                _create_processing_task(storage_directory, file_metadata, temp_token_id)
 
                 processed_doc = ProcessedDocument(
-                    id=source_id,
+                    id=temp_token_id,
                     name=file.filename or "unknown",
                     file_path=str(storage_directory),
                     doc_link=link,
@@ -502,7 +420,7 @@ async def upload_documents(
                     status="uploaded",
                 )
                 logger.info(
-                    f"Created processing task for document: {file.filename} with ID: {source_id}"
+                    f"Created processing task for document: {file.filename} with ID: {temp_token_id}"
                 )
 
             processed_documents.append(processed_doc)
@@ -687,7 +605,7 @@ async def list_topics(
             query = db.query(
                 GraphBuildStatus.topic_name,
                 GraphBuildStatus.external_database_uri,
-                func.count(GraphBuildStatus.source_id).label("total_documents"),
+                func.count(GraphBuildStatus.temp_token_id).label("total_documents"),
                 func.sum(
                     case((GraphBuildStatus.status == "pending", 1), else_=0)
                 ).label("pending_count"),

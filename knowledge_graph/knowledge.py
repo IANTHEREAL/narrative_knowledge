@@ -60,7 +60,7 @@ class KnowledgeBuilder:
             source_info = extract_source_data(source_path)
         except Exception as e:
             logger.error(f"Failed to process {source_path}: {e}")
-            raise RuntimeError(f"Failed to process{source_path}: {e}")
+            raise RuntimeError(f"Failed to process {source_path}: {e}")
 
         full_content = source_info.get("content", None)
         source_type = source_info.get("file_type", "document")
