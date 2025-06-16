@@ -29,7 +29,6 @@ class KnowledgeBuilder:
         self,
         source_path: str,
         attributes: Dict[str, Any],
-        source_id: str = None,
     ):
         # Extract basic info of source
         doc_link = attributes.get("doc_link", None)
@@ -79,10 +78,6 @@ class KnowledgeBuilder:
                 "hash": source_hash,
                 "attributes": attributes,
             }
-
-            # Use pre-set source_id if provided (for consistency with task tracking)
-            if source_id:
-                source_data_kwargs["id"] = source_id
 
             source_data = SourceData(**source_data_kwargs)
 

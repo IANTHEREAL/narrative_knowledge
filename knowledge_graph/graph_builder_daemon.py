@@ -78,9 +78,9 @@ class GraphBuildDaemon:
         topic_name = task_info["topic_name"]
         external_database_uri = task_info["external_database_uri"]
         task_data = task_info["task_data"]
-        source_ids = [task["source_id"] for task in task_data]
+        temp_token_ids = [task["temp_token_id"] for task in task_data]
         logger.info(
-            f"Processing earliest topic: {topic_name} with {len(source_ids)} sources (database: {'external' if external_database_uri else 'local'})"
+            f"Processing earliest topic: {topic_name} with {len(temp_token_ids)} sources (database: {'external' if external_database_uri else 'local'})"
         )
         self._process_task(task_info, external_database_uri)
 
@@ -114,10 +114,10 @@ class GraphBuildDaemon:
                 for task in topic_tasks:
                     if not task.storage_directory:
                         logger.error(
-                            f"Task {task.source_id} has no storage directory, marking as failed"
+                            f"Task {task.temp_token_id} has no storage directory, marking as failed"
                         )
                         raise Exception(
-                            f"Task {task.source_id} has no storage directory {task.storage_directory}"
+                            f"Task {task.temp_token_id} has no storage directory {task.storage_directory}"
                         )
 
                     # Verify storage directory exists and contains required files
@@ -155,7 +155,7 @@ class GraphBuildDaemon:
 
                     task_data.append(
                         {
-                            "source_id": task.source_id,
+                            "temp_token_id": task.temp_token_id,
                             "storage_directory": str(storage_path),
                             "document_file": str(doc_file),
                             "metadata": metadata,
@@ -167,19 +167,23 @@ class GraphBuildDaemon:
                     return None
 
                 # Update remaining valid tasks to processing status
-                valid_source_ids = [task["source_id"] for task in task_data]
+                valid_temp_token_ids = [task["temp_token_id"] for task in task_data]
                 self._update_task_status(
                     db,
                     topic_name,
-                    valid_source_ids,
+                    valid_temp_token_ids,
                     external_database_uri,
                     "processing",
                 )
             except Exception as e:
                 logger.error(f"Error in _prepare_task_build: {e}", exc_info=True)
-                source_ids = [task.source_id for task in topic_tasks]
+                valid_temp_token_ids = [task.temp_token_id for task in topic_tasks]
                 self._update_final_status(
-                    topic_name, source_ids, external_database_uri, "failed", str(e)
+                    topic_name,
+                    valid_temp_token_ids,
+                    external_database_uri,
+                    "failed",
+                    str(e),
                 )
                 raise
 
@@ -239,7 +243,7 @@ class GraphBuildDaemon:
         self,
         db: Session,
         topic_name: str,
-        source_ids: List[str],
+        temp_token_ids: List[str],
         external_database_uri: str,
         status: str,
         error_message: Optional[str] = None,
@@ -250,7 +254,7 @@ class GraphBuildDaemon:
         Args:
             db: Database session
             topic_name: Name of the topic
-            source_ids: List of source IDs to update
+            temp_token_ids: List of temp token IDs to update
             external_database_uri: External database URI
             status: New status to set
             error_message: Error message if status is 'failed'
@@ -264,14 +268,14 @@ class GraphBuildDaemon:
             db.query(GraphBuildStatus).filter(
                 and_(
                     GraphBuildStatus.topic_name == topic_name,
-                    GraphBuildStatus.source_id.in_(source_ids),
+                    GraphBuildStatus.temp_token_id.in_(temp_token_ids),
                     GraphBuildStatus.external_database_uri == external_database_uri,
                 )
             ).update(update_data, synchronize_session=False)
 
             db.commit()
             logger.info(
-                f"Updated {len(source_ids)} local database tasks to status: {status}"
+                f"Updated {len(temp_token_ids)} local database tasks to status: {status}"
             )
 
         except Exception as e:
@@ -284,7 +288,7 @@ class GraphBuildDaemon:
     def _update_final_status(
         self,
         topic_name: str,
-        source_ids: List[str],
+        temp_token_ids: List[str],
         external_database_uri: str,
         status: str,
         error_message: Optional[str] = None,
@@ -295,7 +299,7 @@ class GraphBuildDaemon:
 
         Args:
             topic_name: Name of the topic
-            source_ids: List of source IDs to update
+            temp_token_ids: List of temp token IDs to update
             external_database_uri: External database URI (for filtering)
             status: New status to set
             error_message: Error message if status is 'failed'
@@ -311,50 +315,19 @@ class GraphBuildDaemon:
                 db.query(GraphBuildStatus).filter(
                     and_(
                         GraphBuildStatus.topic_name == topic_name,
-                        GraphBuildStatus.source_id.in_(source_ids),
+                        GraphBuildStatus.temp_token_id.in_(temp_token_ids),
                         GraphBuildStatus.external_database_uri == external_database_uri,
                     )
                 ).update(update_data, synchronize_session=False)
 
                 db.commit()
                 logger.info(
-                    f"Updated {len(source_ids)} tasks to final status: {status} (topic: {topic_name})"
+                    f"Updated {len(temp_token_ids)} tasks to final status: {status} (topic: {topic_name})"
                 )
 
         except Exception as e:
             logger.error(f"Failed to update final task status: {e}", exc_info=True)
             # Don't raise here as the graph building itself might have succeeded
-
-    def _create_source_list(self, db: Session, source_ids: List[str]) -> List[Dict]:
-        """
-        Create a list of source documents for graph building.
-
-        Args:
-            db: Database session
-            source_ids: List of source IDs to fetch
-
-        Returns:
-            List of source document dictionaries
-        """
-        sources = db.query(SourceData).filter(SourceData.id.in_(source_ids)).all()
-
-        topic_docs = []
-        for source in sources:
-            if source.content:  # Only include sources with content
-                topic_docs.append(
-                    {
-                        "source_id": source.id,
-                        "source_name": source.name,
-                        "source_content": source.content,
-                        "source_link": source.link,
-                    }
-                )
-            else:
-                logger.warning(
-                    f"Source {source.id} ({source.name}) has no content, skipping"
-                )
-
-        return topic_docs
 
     def get_daemon_status(self) -> Dict:
         """
@@ -447,24 +420,20 @@ class GraphBuildDaemon:
                     "topic_name": metadata.get("topic_name", topic_name),
                 }
 
-                # Use the pre-generated source_id from upload for knowledge extraction
-                # This ensures consistency between task tracking and database records
-                result = kb_builder.extract_knowledge(
-                    task["document_file"], attributes, source_id=task["source_id"]
-                )
+                result = kb_builder.extract_knowledge(task["document_file"], attributes)
 
                 if result["status"] != "success":
                     error_msg = f"Knowledge extraction failed: {result.get('error', 'Unknown error')}"
                     logger.error(error_msg)
                     failed_extractions.append(
-                        {"source_id": task["source_id"], "error": error_msg}
+                        {"temp_token_id": task["temp_token_id"], "error": error_msg}
                     )
                     continue
 
-                # Add to successful extractions using the consistent source_id
+                # Add to successful extractions using the consistent temp_token_id
                 extracted_sources.append(
                     {
-                        "source_id": task["source_id"],  # Use the original source_id
+                        "source_id": result["source_id"],
                         "source_name": result["source_name"],
                         "source_content": result["source_content"],
                         "source_link": result["source_link"],
@@ -472,14 +441,14 @@ class GraphBuildDaemon:
                 )
 
                 logger.info(
-                    f"Successfully extracted knowledge from {task['document_file']} with source_id: {task['source_id']}"
+                    f"Successfully extracted knowledge from {task['document_file']} with temp_token_id: {task['temp_token_id']}"
                 )
 
             except Exception as e:
                 error_msg = f"Failed to extract knowledge from {task['document_file']}: {str(e)}"
                 logger.error(error_msg, exc_info=True)
                 failed_extractions.append(
-                    {"source_id": task["source_id"], "error": error_msg}
+                    {"temp_token_id": task["temp_token_id"], "error": error_msg}
                 )
 
         # Handle failed extractions
@@ -506,13 +475,13 @@ class GraphBuildDaemon:
             result = graph_builder.build_knowledge_graph(topic_name, extracted_sources)
 
             # Update successful tasks to completed status
-            # Use the consistent source_ids from successful extractions
-            successful_source_ids = [
-                source["source_id"] for source in extracted_sources
+            # Use the consistent temp_token_ids from successful extractions
+            completed_temp_token_ids = [
+                source["temp_token_id"] for source in extracted_sources
             ]
 
             self._update_final_status(
-                topic_name, successful_source_ids, external_database_uri, "completed"
+                topic_name, completed_temp_token_ids, external_database_uri, "completed"
             )
 
             logger.info(
@@ -524,14 +493,12 @@ class GraphBuildDaemon:
             error_msg = f"Graph building failed: {str(e)}"
             logger.error(error_msg, exc_info=True)
 
-            # Mark successful extractions as failed due to graph building failure
-            # Use the consistent source_ids from successful extractions
-            successful_source_ids = [
-                source["source_id"] for source in extracted_sources
+            failed_temp_token_ids = [
+                source["temp_token_id"] for source in extracted_sources
             ]
             self._update_final_status(
                 topic_name,
-                successful_source_ids,
+                failed_temp_token_ids,
                 external_database_uri,
                 "failed",
                 error_msg,

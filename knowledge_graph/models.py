@@ -279,7 +279,7 @@ class GraphBuildStatus(Base):
     __tablename__ = "graph_build_status"
 
     topic_name = Column(String(255), primary_key=True, nullable=False)
-    source_id = Column(
+    temp_token_id = Column(
         String(36), primary_key=True, nullable=False
     )  # Removed FK constraint for multi-db support
     external_database_uri = Column(
@@ -308,11 +308,11 @@ class GraphBuildStatus(Base):
 
     __table_args__ = (
         Index("idx_graph_build_status_topic", "topic_name"),
-        Index("idx_graph_build_status_source", "source_id"),
+        Index("idx_graph_build_status_source", "temp_token_id"),
         Index("idx_graph_build_status_status", "status"),
         Index("idx_graph_build_status_created", "created_at"),
         Index("idx_graph_build_status_external_db", "external_database_uri"),
     )
 
     def __repr__(self):
-        return f"<GraphBuildStatus(topic={self.topic_name}, source={self.source_id}, status={self.status})>"
+        return f"<GraphBuildStatus(topic={self.topic_name}, source={self.temp_token_id}, status={self.status})>"
