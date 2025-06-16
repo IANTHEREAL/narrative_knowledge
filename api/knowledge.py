@@ -20,6 +20,7 @@ from api.models import (
     TopicSummary,
 )
 from knowledge_graph.models import (
+    SourceData,
     GraphBuildStatus,
 )
 
@@ -106,6 +107,57 @@ def _validate_batch_file_size(files: List[UploadFile]) -> None:
         )
 
 
+def _save_file_and_metadata(
+    file: UploadFile, metadata: DocumentMetadata, base_dir: Path, source_id: str
+) -> None:
+    """
+    Helper function to save file and metadata to directory.
+
+    Args:
+        file: The uploaded file to save
+        metadata: Document metadata
+        base_dir: Directory to save files to
+        source_id: Source ID to use in metadata
+    """
+    # Create directory
+    base_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save the uploaded file
+    file_path = base_dir / file.filename
+    with open(file_path, "wb") as buffer:
+        content = file.file.read()
+        buffer.write(content)
+
+    # Save metadata as JSON
+    metadata_file = base_dir / "document_metadata.json"
+    metadata_dict = metadata.dict()
+    metadata_dict["file_name"] = file.filename
+    metadata_dict["source_id"] = source_id
+
+    with open(metadata_file, "w", encoding="utf-8") as f:
+        json.dump(metadata_dict, f, indent=2, ensure_ascii=False)
+
+
+def _get_versioned_directory(base_dir: Path) -> Path:
+    """
+    Get a versioned directory path that doesn't exist yet.
+
+    Args:
+        base_dir: Base directory path
+
+    Returns:
+        Path to versioned directory
+    """
+    base_name = base_dir.name
+    parent_dir = base_dir.parent
+    counter = 1
+    while True:
+        versioned_dir = parent_dir / f"{base_name}_v{counter}"
+        if not versioned_dir.exists():
+            return versioned_dir
+        counter += 1
+
+
 def _save_uploaded_file_with_metadata(
     file: UploadFile, metadata: DocumentMetadata
 ) -> Tuple[Path, bool, str]:
@@ -138,11 +190,60 @@ def _save_uploaded_file_with_metadata(
         base_name = Path(filename).stem
         base_dir = UPLOAD_DIR / metadata.topic_name / base_name
 
-        # Check if directory with same name exists
+        # First check database for existing SourceData with same doc_link
+        # This maintains consistency with knowledge.py logic
+        with SessionLocal() as db:
+            existing_source = (
+                db.query(SourceData)
+                .filter(SourceData.link == metadata.doc_link)
+                .first()
+            )
+
+            if existing_source:
+                logger.info(
+                    f"Found existing SourceData with same doc_link: {metadata.doc_link}, "
+                    f"reusing source_id: {existing_source.id}"
+                )
+
+                # Check if we have a local file storage for this source
+                if base_dir.exists():
+                    metadata_file = base_dir / "document_metadata.json"
+                    if metadata_file.exists():
+                        try:
+                            existing_metadata = json.loads(
+                                metadata_file.read_text(encoding="utf-8")
+                            )
+                            # Update the existing metadata with the consistent source_id
+                            if existing_metadata.get("source_id") != existing_source.id:
+                                existing_metadata["source_id"] = existing_source.id
+                                with open(metadata_file, "w", encoding="utf-8") as f:
+                                    json.dump(
+                                        existing_metadata,
+                                        f,
+                                        indent=2,
+                                        ensure_ascii=False,
+                                    )
+                                logger.info(
+                                    f"Updated metadata file with consistent source_id: {existing_source.id}"
+                                )
+                        except json.JSONDecodeError:
+                            logger.warning(
+                                f"Invalid metadata file found at {metadata_file}"
+                            )
+
+                    return base_dir, True, existing_source.id
+                else:
+                    # Save file with existing source_id
+                    _save_file_and_metadata(
+                        file, metadata, base_dir, existing_source.id
+                    )
+                    logger.info(f"File saved with existing source_id: {base_dir}")
+                    return base_dir, False, existing_source.id
+
+        # Check if directory with same name exists for file-based duplicate detection
         if base_dir.exists():
             metadata_file = base_dir / "document_metadata.json"
             if metadata_file.exists():
-                # Compare existing metadata with current metadata
                 try:
                     existing_metadata = json.loads(
                         metadata_file.read_text(encoding="utf-8")
@@ -150,7 +251,6 @@ def _save_uploaded_file_with_metadata(
                     current_metadata = metadata.dict()
 
                     # Compare core metadata fields that determine document uniqueness
-                    # We compare: doc_link, topic_name, database_uri
                     metadata_matches = (
                         existing_metadata.get("doc_link")
                         == current_metadata.get("doc_link")
@@ -165,69 +265,29 @@ def _save_uploaded_file_with_metadata(
                         logger.info(
                             f"File with identical metadata already exists: {base_dir}"
                         )
-
-                        # Extract source_id from existing metadata
                         existing_source_id = existing_metadata.get("source_id")
                         if not existing_source_id:
-                            # This should not happen with proper design - existing files should have source_id
                             raise HTTPException(
                                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                                 detail=f"Existing file at {base_dir} has corrupted metadata (missing source_id). Please contact administrator.",
                             )
-
                         return base_dir, True, existing_source_id
                     else:
                         # Different metadata, create versioned directory
-                        counter = 1
-                        while True:
-                            versioned_dir = (
-                                UPLOAD_DIR
-                                / metadata.topic_name
-                                / f"{base_name}_v{counter}"
-                            )
-                            if not versioned_dir.exists():
-                                base_dir = versioned_dir
-                                break
-                            counter += 1
+                        base_dir = _get_versioned_directory(base_dir)
                         logger.info(
                             f"Creating versioned directory for different metadata: {base_dir}"
                         )
+
                 except json.JSONDecodeError:
                     logger.warning(
                         f"Invalid metadata file found at {metadata_file}, creating new version"
                     )
-                    # Create versioned directory if metadata file is corrupted
-                    counter = 1
-                    while True:
-                        versioned_dir = (
-                            UPLOAD_DIR / metadata.topic_name / f"{base_name}_v{counter}"
-                        )
-                        if not versioned_dir.exists():
-                            base_dir = versioned_dir
-                            break
-                        counter += 1
+                    base_dir = _get_versioned_directory(base_dir)
 
-        # Create directory
-        base_dir.mkdir(parents=True, exist_ok=True)
-
-        # Save the uploaded file
-        file_path = base_dir / filename
-        with open(file_path, "wb") as buffer:
-            content = file.file.read()
-            buffer.write(content)
-
-        # Generate unique source_id for this document
+        # Save new file with new source_id
         source_id = str(uuid.uuid4())
-
-        # Save metadata as JSON
-        metadata_file = base_dir / "document_metadata.json"
-        metadata_dict = metadata.dict()
-        metadata_dict["file_name"] = filename
-        metadata_dict["source_id"] = source_id  # Pre-generated source_id
-
-        with open(metadata_file, "w", encoding="utf-8") as f:
-            json.dump(metadata_dict, f, indent=2, ensure_ascii=False)
-
+        _save_file_and_metadata(file, metadata, base_dir, source_id)
         logger.info(f"File and metadata saved successfully: {base_dir}")
         return base_dir, False, source_id
 
@@ -505,8 +565,12 @@ async def upload_documents(
 
 @router.post("/trigger-processing", response_model=APIResponse)
 async def trigger_processing(
-    topic_name: str = Form(..., description="Name of the topic to trigger processing for"),
-    database_uri: Optional[str] = Form(None, description="Database URI to filter tasks (optional)"),
+    topic_name: str = Form(
+        ..., description="Name of the topic to trigger processing for"
+    ),
+    database_uri: Optional[str] = Form(
+        None, description="Database URI to filter tasks (optional)"
+    ),
 ) -> JSONResponse:
     """
     Trigger processing for uploaded documents in a topic.

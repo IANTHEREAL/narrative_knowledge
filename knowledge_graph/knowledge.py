@@ -70,6 +70,7 @@ class KnowledgeBuilder:
         source_hash = hashlib.sha256(full_content.encode("utf-8")).hexdigest()
 
         with self.SessionLocal() as db:
+            """
             # Check if source data already exists by hash
             existing_source = (
                 db.query(SourceData).filter(SourceData.hash == source_hash).first()
@@ -77,7 +78,7 @@ class KnowledgeBuilder:
 
             if existing_source:
                 logger.info(
-                    f"Source data already exists for {source_path}, id: {existing_source.id}"
+                    f"Source data already exists for {source_path} (matched by hash), id: {existing_source.id}"
                 )
 
                 return {
@@ -99,29 +100,37 @@ class KnowledgeBuilder:
                     "hash": source_hash,
                     "attributes": attributes,
                 }
+            """
+            # Create SourceData with pre-set ID if provided
+            source_data_kwargs = {
+                "name": name,
+                "content": full_content,
+                "link": doc_link,
+                "source_type": source_type,
+                "hash": source_hash,
+                "attributes": attributes,
+            }
 
-                # Use pre-set source_id if provided (for consistency with task tracking)
-                if source_id:
-                    source_data_kwargs["id"] = source_id
+            # Use pre-set source_id if provided (for consistency with task tracking)
+            if source_id:
+                source_data_kwargs["id"] = source_id
 
-                source_data = SourceData(**source_data_kwargs)
+            source_data = SourceData(**source_data_kwargs)
 
-                db.add(source_data)
-                db.commit()
-                db.refresh(source_data)
-                logger.info(
-                    f"Source data created for {source_path}, id: {source_data.id}"
-                )
+            db.add(source_data)
+            db.commit()
+            db.refresh(source_data)
+            logger.info(f"Source data created for {source_path}, id: {source_data.id}")
 
-                return {
-                    "status": "success",
-                    "source_id": source_data.id,
-                    "source_path": source_path,
-                    "source_content": source_data.content,
-                    "source_link": source_data.link,
-                    "source_name": source_data.name,
-                    "source_type": source_type,
-                }
+            return {
+                "status": "success",
+                "source_id": source_data.id,
+                "source_path": source_path,
+                "source_content": source_data.content,
+                "source_link": source_data.link,
+                "source_name": source_data.name,
+                "source_type": source_type,
+            }
 
     def create_build_status_record(
         self, source_id: str, topic_name: str, external_database_uri: str = ""
