@@ -108,7 +108,10 @@ def _validate_batch_file_size(files: List[UploadFile]) -> None:
 
 
 def _save_file_and_metadata(
-    file: UploadFile, metadata: DocumentMetadata, base_dir: Path
+    file: UploadFile,
+    metadata: DocumentMetadata,
+    base_dir: Path,
+    temp_token_id: str = None,
 ) -> None:
     """
     Helper function to save file and metadata to directory.
@@ -117,6 +120,7 @@ def _save_file_and_metadata(
         file: The uploaded file to save
         metadata: Document metadata
         base_dir: Directory to save files to
+        temp_token_id: Optional temp token ID to save in metadata
     """
     # Create directory
     base_dir.mkdir(parents=True, exist_ok=True)
@@ -131,6 +135,8 @@ def _save_file_and_metadata(
     metadata_file = base_dir / "document_metadata.json"
     metadata_dict = metadata.dict()
     metadata_dict["file_name"] = file.filename
+    if temp_token_id:
+        metadata_dict["temp_token_id"] = temp_token_id
 
     with open(metadata_file, "w", encoding="utf-8") as f:
         json.dump(metadata_dict, f, indent=2, ensure_ascii=False)
@@ -182,18 +188,62 @@ def _save_uploaded_file_with_metadata(
                 if not base_dir.exists():
                     # Create versioned directory if base doesn't exist
                     base_dir = _get_versioned_directory(base_dir)
-                    _save_file_and_metadata(file, metadata, base_dir)
+                    _save_file_and_metadata(
+                        file, metadata, base_dir, existing_source.id
+                    )
 
                 logger.info(
                     f"Found existing SourceData with same doc_link: {metadata.doc_link}, "
                     f"reusing source_id: {existing_source.id} as temp_token_id"
                 )
                 return base_dir, existing_source.id
+            # If no existing source in database, check file system for existing metadata
+            # Check all possible versioned directories sequentially
+            base_name = base_dir.name
+            parent_dir = base_dir.parent
+
+            # Check base directory first, then versioned directories
+            directories_to_check = [base_dir]
+            counter = 1
+            while True:
+                versioned_dir = parent_dir / f"{base_name}_v{counter}"
+                if versioned_dir.exists():
+                    directories_to_check.append(versioned_dir)
+                    counter += 1
+                else:
+                    break
+
+            # Check each directory for matching metadata
+            for check_dir in directories_to_check:
+                metadata_file = check_dir / "document_metadata.json"
+                if metadata_file.exists():
+                    try:
+                        with open(metadata_file, "r", encoding="utf-8") as f:
+                            existing_metadata = json.load(f)
+                        if (
+                            existing_metadata
+                            and existing_metadata.get("doc_link") == metadata.doc_link
+                            and existing_metadata.get("topic_name")
+                            == metadata.topic_name
+                            and existing_metadata.get("database_uri")
+                            == metadata.database_uri
+                        ):
+                            # Found matching metadata in file system, check for existing temp_token_id
+                            existing_temp_token = existing_metadata.get("temp_token_id")
+                            if existing_temp_token:
+                                logger.info(
+                                    f"Found existing metadata file with matching temp_token_id: {existing_temp_token} in directory: {check_dir}"
+                                )
+                                return check_dir, existing_temp_token
+                    except json.JSONDecodeError:
+                        logger.warning(
+                            f"Invalid metadata file found at {metadata_file}, skipping"
+                        )
 
             # New source - create directory and save
             base_dir = _get_versioned_directory(base_dir)
             temp_token_id = str(uuid.uuid4())
-            _save_file_and_metadata(file, metadata, base_dir)
+            _save_file_and_metadata(file, metadata, base_dir, temp_token_id)
             logger.info(f"File and metadata saved successfully: {base_dir}")
             return base_dir, temp_token_id
 
