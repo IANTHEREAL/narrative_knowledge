@@ -192,7 +192,9 @@ def _save_uploaded_file_with_metadata(
 
         # First check database for existing SourceData with same doc_link
         # This maintains consistency with knowledge.py logic
-        with SessionLocal() as db:
+        # Use appropriate session factory based on database_uri
+        session_factory = db_manager.get_session_factory(metadata.database_uri)
+        with session_factory() as db:
             existing_source = (
                 db.query(SourceData)
                 .filter(SourceData.link == metadata.doc_link)
