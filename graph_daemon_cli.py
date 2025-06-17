@@ -49,7 +49,7 @@ def start_daemon(args):
         f"Configuration: check_interval={args.check_interval}s, "
         f"llm_provider={args.llm_provider}, llm_model={args.llm_model}, "
         f"log_level={args.log_level}, max_retries={args.max_retries}, "
-        f"embedding_model endpoint={os.getenv('EMBEDDINF_BASE_URL')}, "
+        f"embedding_model endpoint={os.getenv('EMBEDDING_BASE_URL')}, "
         f"LLM endpoint={os.getenv('OPENAI_LIKE_BASE_URL')}"
     )
 
