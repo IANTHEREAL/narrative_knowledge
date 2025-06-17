@@ -143,7 +143,7 @@ class KnowledgeBlock(Base):
     )
     content = Column(LONGTEXT, nullable=True)
     context = Column(Text, nullable=True)
-    content_vec = Column(VectorType(1536), nullable=True)
+    content_vec = Column(VectorType(4096), nullable=True)
     hash = Column(
         String(64),
         nullable=False,
@@ -178,7 +178,7 @@ class Entity(Base):
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     name = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
-    description_vec = Column(VectorType(1536), nullable=True)
+    description_vec = Column(VectorType(4096), nullable=True)
     attributes = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=func.current_timestamp())
     updated_at = Column(
@@ -200,7 +200,7 @@ class Relationship(Base):
     source_entity_id = Column(String(36), ForeignKey("entities.id"), nullable=False)
     target_entity_id = Column(String(36), ForeignKey("entities.id"), nullable=False)
     relationship_desc = Column(Text, nullable=True)
-    relationship_desc_vec = Column(VectorType(1536), nullable=True)
+    relationship_desc_vec = Column(VectorType(4096), nullable=True)
     attributes = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=func.current_timestamp())
     updated_at = Column(

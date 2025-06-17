@@ -1,10 +1,14 @@
 import openai
 import json
+import os
 
-embedding_model = openai.OpenAI()
+embedding_model = openai.OpenAI(
+    base_url=os.getenv("EMBEDDING_MODEL_BASE_URL"),
+    api_key=os.getenv("EMBEDDING_MODEL_API_KEY"),
+)
 
 
-def get_text_embedding(text: str, model="text-embedding-3-small"):
+def get_text_embedding(text: str, model="hf.co/Qwen/Qwen3-Embedding-8B-GGUF:Q8_0"):
     text = text.replace("\n", " ")
     return (
         embedding_model.embeddings.create(input=[text], model=model).data[0].embedding
