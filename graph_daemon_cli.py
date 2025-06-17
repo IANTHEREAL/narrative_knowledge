@@ -8,13 +8,15 @@ This unified CLI tool provides both daemon management and status checking functi
 import logging
 import signal
 import sys
+import os
 import argparse
-from datetime import datetime
-from pathlib import Path
+from dotenv import load_dotenv
 
 from knowledge_graph.graph_builder_daemon import GraphBuildDaemon
 from llm.factory import LLMInterface
 from llm.embedding import get_text_embedding
+
+load_dotenv()
 
 
 def setup_logging(log_level: str = "INFO"):
@@ -46,7 +48,9 @@ def start_daemon(args):
     logger.info(
         f"Configuration: check_interval={args.check_interval}s, "
         f"llm_provider={args.llm_provider}, llm_model={args.llm_model}, "
-        f"log_level={args.log_level}, max_retries={args.max_retries}"
+        f"log_level={args.log_level}, max_retries={args.max_retries}, "
+        f"embedding_model endpoint={os.getenv('EMBEDDING_MODEL_BASE_URL')}, "
+        f"LLM endpoint={os.getenv('OPENAI_LIKE_BASE_URL')}"
     )
 
     try:
