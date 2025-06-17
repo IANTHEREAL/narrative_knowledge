@@ -281,11 +281,11 @@ Return only the JSON, no other text."""
 
             return summary_data
 
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse LLM response as JSON: {e}", exc_info=True)
-            raise e
         except Exception as e:
-            logger.error(f"Error generating summary: {e}", exc_info=True)
+            logger.error(
+                f"Error generating summary: {e}, json string {json_str}",
+                exc_info=True,
+            )
             raise e
 
     def get_summaries_for_topic(self, topic_name: str) -> List[DocumentSummary]:
