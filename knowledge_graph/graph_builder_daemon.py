@@ -31,7 +31,6 @@ class GraphBuildDaemon:
         llm_client: Optional[LLMInterface] = None,
         embedding_func=None,
         check_interval: int = 60,
-        max_retries: int = 3,
     ):
         """
         Initialize the graph build daemon.
@@ -40,12 +39,10 @@ class GraphBuildDaemon:
             llm_client: LLM interface for processing
             embedding_func: Function to generate embeddings
             check_interval: Interval in seconds to check for pending tasks
-            max_retries: Maximum number of retries for failed tasks
         """
         self.llm_client = llm_client or LLMInterface("openai_like", "qwen3-32b")
         self.embedding_func = embedding_func or get_text_embedding
         self.check_interval = check_interval
-        self.max_retries = max_retries
         self.is_running = False
 
     def start(self):

@@ -1,6 +1,7 @@
 import json
 import logging
 from typing import Dict, List, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from knowledge_graph.models import DocumentSummary
 from knowledge_graph.summarizer import DocumentSummarizer
@@ -17,7 +18,13 @@ class KnowledgeGraphBuilder:
     Knowledge graph builder using document summaries.
     """
 
-    def __init__(self, llm_client: LLMInterface, embedding_func, session_factory=None):
+    def __init__(
+        self,
+        llm_client: LLMInterface,
+        embedding_func,
+        session_factory=None,
+        worker_count: int = 3,
+    ):
         """
         Initialize the iterative builder.
 
@@ -29,10 +36,11 @@ class KnowledgeGraphBuilder:
         self.llm_client = llm_client
         self.embedding_func = embedding_func
         self.session_factory = session_factory or SessionLocal
-        self.summarizer = DocumentSummarizer(llm_client, session_factory)
+        self.summarizer = DocumentSummarizer(llm_client, session_factory, worker_count)
         self.graph_builder = NarrativeKnowledgeGraphBuilder(
             llm_client, embedding_func, session_factory
         )
+        self.worker_count = worker_count
 
     def build_knowledge_graph(
         self,
@@ -107,16 +115,105 @@ class KnowledgeGraphBuilder:
         logger.info(
             "\n=== Stage 3: Extracting narrative triplets to enrich skeletal graph ==="
         )
+
+        # Phase 1: Parallel triplet extraction
+        logger.info(
+            f"Phase 1: Extracting triplets from {len(documents)} documents in parallel using {self.worker_count} workers"
+        )
+
+        def extract_triplets_worker(doc_with_index):
+            """Worker function to extract triplets from a single document."""
+            index, doc = doc_with_index
+            try:
+                triplets = self.graph_builder.extract_triplets_from_document(
+                    topic_name, doc, blueprint, skeletal_graph
+                )
+
+                # Count different types of triplets
+                doc_semantic = sum(
+                    1 for t in triplets if t.get("category") == "narrative"
+                )
+                doc_structural = sum(
+                    1 for t in triplets if t.get("category") == "skeletal"
+                )
+
+                logger.info(
+                    f"Document {doc['source_name']}: extracted {doc_semantic} narrative + {doc_structural} skeletal triplets"
+                )
+
+                return index, doc, triplets, None
+            except Exception as e:
+                error_msg = f"Failed to extract triplets from {doc['source_name']}: {e}"
+                logger.error(error_msg, exc_info=True)
+                return index, doc, None, error_msg
+
+        # Extract triplets in parallel
+        triplet_results = [None] * len(documents)  # Pre-allocate to maintain order
+        extraction_errors = []
+
+        indexed_documents = list(enumerate(documents))
+
+        with ThreadPoolExecutor(max_workers=self.worker_count) as executor:
+            # Submit all triplet extraction tasks
+            future_to_doc = {
+                executor.submit(
+                    extract_triplets_worker, doc_with_index
+                ): doc_with_index[1]
+                for doc_with_index in indexed_documents
+            }
+
+            completed_extractions = 0
+            for future in as_completed(future_to_doc):
+                doc = future_to_doc[future]
+                completed_extractions += 1
+                try:
+                    index, doc_result, triplets, error = future.result()
+
+                    if error:
+                        extraction_errors.append(error)
+                        logger.warning(
+                            f"Triplet extraction failed ({completed_extractions}/{len(documents)}): {doc['source_name']}"
+                        )
+                    else:
+                        triplet_results[index] = (doc_result, triplets)
+                        logger.info(
+                            f"Triplet extraction completed ({completed_extractions}/{len(documents)}): {doc['source_name']}"
+                        )
+
+                except Exception as e:
+                    error_msg = f"Unexpected error extracting triplets from {doc['source_name']}: {e}"
+                    extraction_errors.append(error_msg)
+                    logger.error(error_msg, exc_info=True)
+
+        # Check for extraction errors
+        if extraction_errors:
+            logger.warning(
+                f"Triplet extraction completed with {len(extraction_errors)} errors:"
+            )
+            for error in extraction_errors:
+                logger.warning(f"  - {error}")
+
+            raise RuntimeError(
+                f"Failed to extract triplets from {len(extraction_errors)}/{len(documents)} documents"
+            )
+
+        # Filter out None results (failed extractions)
+        successful_results = [
+            result for result in triplet_results if result is not None
+        ]
+
+        # Phase 2: Sequential graph conversion
+        logger.info(
+            "Phase 2: Converting triplets to graph entities and relationships sequentially"
+        )
+
         all_triplets = 0
         semantic_triplets_count = 0
         structural_triplets_count = 0
         entities_created = 0
         relationships_created = 0
-        for doc in documents:
-            triplets = self.graph_builder.extract_triplets_from_document(
-                topic_name, doc, blueprint, skeletal_graph
-            )
 
+        for doc, triplets in successful_results:
             # Count different types of triplets
             doc_semantic = sum(1 for t in triplets if t.get("category") == "narrative")
             doc_structural = sum(1 for t in triplets if t.get("category") == "skeletal")
@@ -126,7 +223,7 @@ class KnowledgeGraphBuilder:
             structural_triplets_count += doc_structural
 
             logger.info(
-                f"Processing document {doc['source_name']}: {doc_semantic} narrative + {doc_structural} skeletal triplets"
+                f"Converting triplets for document {doc['source_name']}: {doc_semantic} narrative + {doc_structural} skeletal triplets"
             )
 
             new_entities_created, new_relationships_created = (
@@ -135,12 +232,13 @@ class KnowledgeGraphBuilder:
             entities_created += new_entities_created
             relationships_created += new_relationships_created
             logger.info(
-                f"Successfully processed: {new_entities_created} entities, {new_relationships_created} relationships"
+                f"Successfully converted: {new_entities_created} entities, {new_relationships_created} relationships"
             )
 
         logger.info(
             f"Total triplets extracted: {all_triplets} ({semantic_triplets_count} semantic + {structural_triplets_count} structural)"
         )
+
         # Compile results
         result = {
             "topic_name": topic_name,
@@ -180,7 +278,10 @@ class KnowledgeGraphBuilder:
         return result
 
     def generate_document_summaries(
-        self, topic_name: str, documents: List[Dict], force_regenerate: bool = False
+        self,
+        topic_name: str,
+        documents: List[Dict],
+        force_regenerate: bool = False,
     ) -> List[Dict]:
         """
         Generate topic-focused summaries for all documents.

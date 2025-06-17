@@ -46,9 +46,8 @@ def start_daemon(args):
     logger = logging.getLogger(__name__)
     logger.info("Starting Graph Build Daemon...")
     logger.info(
-        f"Configuration: check_interval={args.check_interval}s, "
+        f"Configuration: check_interval={args.check_interval}s, log_level={args.log_level}, "
         f"llm_provider={args.llm_provider}, llm_model={args.llm_model}, "
-        f"log_level={args.log_level}, max_retries={args.max_retries}, "
         f"embedding_model endpoint={os.getenv('EMBEDDING_BASE_URL')}, "
         f"LLM endpoint={os.getenv('OPENAI_LIKE_BASE_URL')}"
     )
@@ -63,16 +62,11 @@ def start_daemon(args):
             llm_client=llm_client,
             embedding_func=get_text_embedding,
             check_interval=args.check_interval,
-            max_retries=args.max_retries,
         )
 
         # Setup signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, lambda s, f: signal_handler(s, f, daemon))
         signal.signal(signal.SIGTERM, lambda s, f: signal_handler(s, f, daemon))
-
-        # Print initial status
-        status = daemon.get_daemon_status()
-        logger.info(f"Initial daemon status: {status}")
 
         # Start the daemon
         logger.info("Graph Build Daemon is now running. Press Ctrl+C to stop.")
@@ -204,12 +198,6 @@ Examples:
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Log level (default: INFO)",
-    )
-    start_parser.add_argument(
-        "--max-retries",
-        type=int,
-        default=3,
-        help="Maximum number of retries for failed tasks (default: 3)",
     )
 
     # Status subcommand
