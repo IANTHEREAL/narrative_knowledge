@@ -5,7 +5,7 @@ import os
 
 def get_text_embedding(text: str, model="hf.co/Qwen/Qwen3-Embedding-8B-GGUF:Q8_0"):
     embedding_model = openai.OpenAI(
-        base_url=os.getenv("EMBEDDING_MODEL_BASE_URL"),
+        base_url=os.getenv("EMBEDDING_BASE_URL"),
         api_key=os.getenv("EMBEDDING_MODEL_API_KEY"),
     )
     text = text.replace("\n", " ")
