@@ -61,7 +61,7 @@ class OpenAILikeProvider(BaseLLMProvider):
                     hasattr(chunk.choices[0].delta, "content")
                     and chunk.choices[0].delta.content is not None
                 ):
-                    print(chunk.choices[0].delta.content, end="", flush=True)
+                    # print(chunk.choices[0].delta.content, end="")
                     response_text += chunk.choices[0].delta.content
 
             return response_text
