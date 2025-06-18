@@ -122,8 +122,13 @@ Now, please generate the skeletal graph for {topic_name}.
 
             return skeletal_data
 
+        except json.JSONDecodeError as e:
+            logger.error(
+                f"Failed to parse skeletal graph response as JSON: {e}. response: {response}, json_str: {json_str}"
+            )
+            raise ValueError(f"Failed to parse skeletal graph response as JSON: {e}.")
         except Exception as e:
-            logger.error(f"Error generating skeletal graph: {e}")
+            logger.error(f"Error generating skeletal graph: {e}. response: {response}")
             raise RuntimeError(f"Error generating skeletal graph: {e}")
 
     def generate_analysis_blueprint(
@@ -252,10 +257,16 @@ Now, please generate the analysis blueprint for {topic_name}.
                 return blueprint
 
             except json.JSONDecodeError as e:
+                logger.error(
+                    f"Failed to parse analysis blueprint response as JSON: {e}. Response: {response}, json_str: {json_str}"
+                )
                 raise ValueError(
-                    f"Failed to parse LLM response as JSON: {e}\nResponse: {response}"
+                    f"Failed to parse analysis blueprint response as JSON: {e}."
                 )
             except Exception as e:
+                logger.error(
+                    f"Error generating analysis blueprint: {e}. response: {response}"
+                )
                 raise RuntimeError(f"Error generating analysis blueprint: {e}")
 
     def extract_triplets_from_document(
@@ -433,11 +444,19 @@ Now, please generate the narrative triplets for {topic_name}.
             return triplets
 
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse JSON from document content: {e}")
-            raise RuntimeError(f"Failed to parse JSON from document content: {e}")
+            logger.error(
+                f"Failed to parse narrative triplets from document content: {e}, response: {response}, json_str: {json_str}"
+            )
+            raise RuntimeError(
+                f"Failed to parse narrative triplets from document content: {e}"
+            )
         except Exception as e:
-            logger.error(f"Error processing document content: {e}")
-            raise RuntimeError(f"Error processing document content: {e}")
+            logger.error(
+                f"Error processing narrative triplets from document content: {e}, response: {response}"
+            )
+            raise RuntimeError(
+                f"Error processing narrative triplets from document content: {e}"
+            )
 
     def extract_structural_triplets_from_document_content(
         self,
@@ -526,17 +545,17 @@ Now, please generate the structural triplets for {topic_name}.
 
         except json.JSONDecodeError as e:
             logger.error(
-                f"Failed to parse structural JSON from document content: {e}. response {json_str}"
+                f"Failed to parse structural triplets from document content: {e}. response: {response}, json_str: {json_str}"
             )
             raise RuntimeError(
-                f"Failed to parse structural JSON from document content: {e}"
+                f"Failed to parse structural triplets from document content: {e}"
             )
         except Exception as e:
             logger.error(
-                f"Error processing structural extraction for document content: {e}"
+                f"Error processing structural triplets from document content: {e}, response: {response}"
             )
             raise RuntimeError(
-                f"Error processing structural extraction for document content: {e}"
+                f"Error processing structural triplets from document content: {e}"
             )
 
     def _simple_retry(self, operation_func, max_retries=3):
