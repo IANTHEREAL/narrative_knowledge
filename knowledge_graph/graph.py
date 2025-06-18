@@ -13,7 +13,7 @@ from knowledge_graph.models import (
     AnalysisBlueprint,
     SourceGraphMapping,
 )
-from utils.json_utils import extract_json, extract_json_array
+from utils.json_utils import robust_json_parse
 from setting.db import SessionLocal
 from llm.factory import LLMInterface
 
@@ -43,6 +43,15 @@ class NarrativeKnowledgeGraphBuilder:
         self.llm_client = llm_client
         self.embedding_func = embedding_func
         self.SessionLocal = session_factory or SessionLocal
+
+    def _parse_llm_json_response(
+        self, response: str, expected_format: str = "object"
+    ) -> Any:
+        """
+        Parse LLM JSON response with escape error fixing and LLM fallback.
+        Focuses on escape issues with simple fallback strategy.
+        """
+        return robust_json_parse(response, self.llm_client, expected_format)
 
     def generate_skeletal_graph_from_summaries(
         self, topic_name: str, topic_docs: List[Dict], force_regenerate: bool = False
@@ -106,27 +115,19 @@ Focus on:
 1. The most important entities that define {topic_name}
 2. Core relationships that explain the main story for {topic_name}
 
-Now, please generate the skeletal graph for {topic_name}.
+Now, please generate the skeletal graph for {topic_name} in valid JSON format.
 """
 
         try:
             response = self.llm_client.generate(skeletal_prompt, max_tokens=8192)
-            json_str = extract_json(response)
-            if not json_str:
-                raise ValueError(f"Failed to parse skeletal graph response: {response}")
+            skeletal_data = self._parse_llm_json_response(response, "object")
 
-            skeletal_data = json.loads(json_str)
             logger.info(
                 f"Generated skeletal graph with {len(skeletal_data.get('skeletal_entities', []))} entities and {len(skeletal_data.get('skeletal_relationships', []))} relationships"
             )
 
             return skeletal_data
 
-        except json.JSONDecodeError as e:
-            logger.error(
-                f"Failed to parse skeletal graph response as JSON: {e}. response: {response}, json_str: {json_str}"
-            )
-            raise ValueError(f"Failed to parse skeletal graph response as JSON: {e}.")
         except Exception as e:
             logger.error(f"Error generating skeletal graph: {e}. response: {response}")
             raise RuntimeError(f"Error generating skeletal graph: {e}")
@@ -170,8 +171,7 @@ Now, please generate the skeletal graph for {topic_name}.
             combined_docs_summary = "\n".join(doc_summaries)
 
             # Stage 2 prompt: Analysis blueprint generation (enhanced with skeletal graph)
-            blueprint_prompt = f"""
-You are an expert strategist analyzing a complete "context package" for {topic_name}. 
+            blueprint_prompt = f"""You are an expert strategist analyzing a complete "context package" for {topic_name}.
 Your task is to generate a strategic analysis blueprint that will guide the detailed extraction of narrative knowledge from documents.
 <skeletal_graph_context>
 {skeletal_context}
@@ -203,21 +203,13 @@ Focus on:
 3. What business context or domain-specific considerations are relevant
 4. create processing_instructions to guide the extraction process to achieve the goal of the blueprint
 
-Now, please generate the analysis blueprint for {topic_name}.
+Now, please generate the analysis blueprint for {topic_name} in valid JSON format.
 """
 
             try:
                 logger.info(f"Generating analysis blueprint for {topic_name}")
                 response = self.llm_client.generate(blueprint_prompt, max_tokens=4096)
-
-                # Extract JSON from response
-                json_str = extract_json(response)
-                if not json_str:
-                    raise ValueError(
-                        f"Failed to parse LLM response as JSON: {response}"
-                    )
-
-                blueprint_data = json.loads(json_str)
+                blueprint_data = self._parse_llm_json_response(response, "object")
 
                 # Create and save blueprint with skeletal graph from previous stage
                 attributes = {"document_count": len(topic_docs)}
@@ -256,13 +248,6 @@ Now, please generate the analysis blueprint for {topic_name}.
                 )
                 return blueprint
 
-            except json.JSONDecodeError as e:
-                logger.error(
-                    f"Failed to parse analysis blueprint response as JSON: {e}. Response: {response}, json_str: {json_str}"
-                )
-                raise ValueError(
-                    f"Failed to parse analysis blueprint response as JSON: {e}."
-                )
             except Exception as e:
                 logger.error(
                     f"Error generating analysis blueprint: {e}. response: {response}"
@@ -423,19 +408,12 @@ Return a JSON array of enhanced triplets:
 Focus on extracting meaningful relationships that reveal business insights. 
 Only extract triplets if they contain valuable knowledge.
 
-Now, please generate the narrative triplets for {topic_name}.
+Now, please generate the narrative triplets for {topic_name} in valid JSON format.
 """
 
         try:
             response = self.llm_client.generate(extraction_prompt, max_tokens=16384)
-
-            # Extract and parse JSON
-            json_str = extract_json_array(response)
-            json_str = "".join(
-                char for char in json_str if ord(char) >= 32 or char in "\r\t"
-            )
-
-            triplets = json.loads(json_str)
+            triplets = self._parse_llm_json_response(response, "array")
 
             # Add metadata to each triplet
             for triplet in triplets:
@@ -443,13 +421,6 @@ Now, please generate the narrative triplets for {topic_name}.
 
             return triplets
 
-        except json.JSONDecodeError as e:
-            logger.error(
-                f"Failed to parse narrative triplets from document content: {e}, response: {response}, json_str: {json_str}"
-            )
-            raise RuntimeError(
-                f"Failed to parse narrative triplets from document content: {e}"
-            )
         except Exception as e:
             logger.error(
                 f"Error processing narrative triplets from document content: {e}, response: {response}"
@@ -523,19 +494,13 @@ Return a JSON array of structural triplets:
 ```
 
 Focus on building clear topic-centric structure. Only extract triplets if they reveal structural relationships.
-Now, please generate the structural triplets for {topic_name}.
+
+Now, please generate the structural triplets for {topic_name} in valid JSON format.
 """
 
         try:
             response = self.llm_client.generate(structural_prompt, max_tokens=16384)
-
-            # Extract and parse JSON
-            json_str = extract_json_array(response)
-            json_str = "".join(
-                char for char in json_str if ord(char) >= 32 or char in "\r\t"
-            )
-
-            triplets = json.loads(json_str)
+            triplets = self._parse_llm_json_response(response, "array")
 
             # Add metadata to each triplet
             for triplet in triplets:
@@ -543,13 +508,6 @@ Now, please generate the structural triplets for {topic_name}.
 
             return triplets
 
-        except json.JSONDecodeError as e:
-            logger.error(
-                f"Failed to parse structural triplets from document content: {e}. response: {response}, json_str: {json_str}"
-            )
-            raise RuntimeError(
-                f"Failed to parse structural triplets from document content: {e}"
-            )
         except Exception as e:
             logger.error(
                 f"Error processing structural triplets from document content: {e}, response: {response}"
