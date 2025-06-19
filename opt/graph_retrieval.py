@@ -1,14 +1,10 @@
-from sqlmodel import Session
+from sqlalchemy.orm import Session
 from sqlalchemy import text
-
-from setting.db import SessionLocal
 
 
 def query_entities_by_ids(db: Session, entities_id: list[int]):
     sql = text(
-        f"""
-        SELECT id, name, description, meta from entities_210001 where id in :entities_id
-    """
+        f"""SELECT id, name, description, attributes from entities where id in :entities_id"""
     )
     res = db.execute(sql, {"entities_id": entities_id})
     entities = {}
@@ -19,7 +15,7 @@ def query_entities_by_ids(db: Session, entities_id: list[int]):
                 "id": row.id,
                 "name": row.name,
                 "description": row.description,
-                "meta": row.meta,
+                "attributes": row.attributes,
             }
     except Exception as e:
         print("Failed to query entities", e)
@@ -30,13 +26,11 @@ def query_entities_by_ids(db: Session, entities_id: list[int]):
 
 def get_relationship_by_entity_ids(db: Session, entity_ids: list[int]):
     sql = text(
-        f"""
-        SELECT rel.id, source_entity.name as source_entity_name, target_entity.name as target_entity_name, rel.description, rel.chunk_id
-               FROM relationships_210001 as rel
-               LEFT JOIN entities_210001 as source_entity ON rel.source_entity_id = source_entity.id
-               LEFT JOIN entities_210001 as target_entity ON rel.target_entity_id = target_entity.id
-        where rel.source_entity_id in :entity_ids or rel.target_entity_id in :entity_ids
-    """
+        f"""SELECT rel.id, source_entity.name as source_entity_name, target_entity.name as target_entity_name, rel.relationship_desc, rel.attributes
+               FROM relationships as rel
+               LEFT JOIN entities as source_entity ON rel.source_entity_id = source_entity.id
+               LEFT JOIN entities as target_entity ON rel.target_entity_id = target_entity.id
+        where rel.source_entity_id in :entity_ids or rel.target_entity_id in :entity_ids """
     )
     res = db.execute(sql, {"entity_ids": entity_ids})
     background_relationships = {}
@@ -47,8 +41,8 @@ def get_relationship_by_entity_ids(db: Session, entity_ids: list[int]):
                 "id": row.id,
                 "source_entity_name": row.source_entity_name,
                 "target_entity_name": row.target_entity_name,
-                "description": row.description,
-                "chunk_id": row.chunk_id,
+                "relationship_desc": row.relationship_desc,
+                "attributes": row.attributes,
             }
     except Exception as e:
         print("Failed to get relationships", e)
@@ -66,10 +60,10 @@ def get_relationship_by_ids(db: Session, relationship_ids: list[int]):
             source_entity.id as source_entity_id,
             target_entity.name as target_entity_name,
             target_entity.id as target_entity_id,
-            rel.description, rel.chunk_id, rel.meta, rel.document_id
-        FROM relationships_210001 as rel
-        LEFT JOIN entities_210001 as source_entity ON rel.source_entity_id = source_entity.id
-        LEFT JOIN entities_210001 as target_entity ON rel.target_entity_id = target_entity.id
+            rel.relationship_desc, rel.attributes
+        FROM relationships as rel
+        LEFT JOIN entities as source_entity ON rel.source_entity_id = source_entity.id
+        LEFT JOIN entities as target_entity ON rel.target_entity_id = target_entity.id
         where rel.id in :relationship_ids
     """
     )
@@ -84,8 +78,8 @@ def get_relationship_by_ids(db: Session, relationship_ids: list[int]):
                 "target_entity_name": row.target_entity_name,
                 "source_entity_id": row.source_entity_id,
                 "target_entity_id": row.target_entity_id,
-                "description": row.description,
-                "chunk_id": row.chunk_id,
+                "relationship_desc": row.relationship_desc,
+                "attributes": row.attributes,
             }
     except Exception as e:
         print("Failed to get relationships", e)
@@ -94,45 +88,99 @@ def get_relationship_by_ids(db: Session, relationship_ids: list[int]):
     return background_relationships
 
 
-def get_chunks_by_ids(db: Session, chunk_ids: list[int]):
-    if len(chunk_ids) == 0:
-        return []
-
+def get_source_data_by_ids(db: Session, source_data_ids: list[int]):
     sql = text(
         f"""
-        SELECT id, text, source_uri, document_id from chunks_210001 where id in :chunk_ids
+        SELECT id, name, content, link, source_type, attributes from source_data where id in :source_data_ids
     """
     )
-    res = db.execute(sql, {"chunk_ids": chunk_ids})
-    background_chunks = []
+    res = db.execute(sql, {"source_data_ids": source_data_ids})
+    source_data = {}
 
     try:
         for row in res.fetchall():
-            background_chunks.append(
-                {
-                    "id": row.id,
-                    "source_uri": row.source_uri,
-                    "text": row.text,
-                    "document_id": row.document_id,
-                }
-            )
+            source_data[row.id] = {
+                "id": row.id,
+                "name": row.name,
+                "content": row.content,
+                "link": row.link,
+                "source_type": row.source_type,
+                "attributes": row.attributes,
+            }
     except Exception as e:
-        print("Failed to get chunks", e)
-        return []
+        print("Failed to get source data", e)
+        return {}
 
-    return background_chunks
+    return source_data
 
 
-def get_documents_by_ids(db: Session, document_ids: list[int]):
+def get_source_data_by_entity_ids(db: Session, entity_ids: list[int]):
     sql = text(
         f"""
-        SELECT id, content from documents where id in :document_ids
+        SELECT 
+            sd.id, 
+            sd.name, 
+            sd.content, 
+            sd.link, 
+            sd.source_type, 
+            sd.attributes
+        FROM source_data as sd
+        INNER JOIN source_graph_mapping as sgm ON sd.id = sgm.source_id
+        WHERE sgm.graph_element_type = 'entity' 
+        AND sgm.graph_element_id IN :entity_ids
     """
     )
+    res = db.execute(sql, {"entity_ids": entity_ids})
+    source_data = {}
 
     try:
-        res = db.execute(sql, {"document_ids": document_ids})
-        return res.fetchall()
+        for row in res.fetchall():
+            source_data[row.id] = {
+                "id": row.id,
+                "name": row.name,
+                "content": row.content,
+                "link": row.link,
+                "source_type": row.source_type,
+                "attributes": row.attributes,
+            }
     except Exception as e:
-        print("Failed to get documents", e)
-        return []
+        print("Failed to get source data by entity ids", e)
+        return {}
+
+    return source_data
+
+
+def get_source_data_by_relationship_ids(db: Session, relationship_ids: list[int]):
+    sql = text(
+        f"""
+        SELECT 
+            sd.id, 
+            sd.name, 
+            sd.content, 
+            sd.link, 
+            sd.source_type, 
+            sd.attributes
+        FROM source_data as sd
+        INNER JOIN source_graph_mapping as sgm ON sd.id = sgm.source_id
+        WHERE sgm.graph_element_type = 'relationship' 
+        AND sgm.graph_element_id IN :relationship_ids
+    """
+    )
+    res = db.execute(sql, {"relationship_ids": relationship_ids})
+    source_data = {}
+
+    try:
+        for row in res.fetchall():
+            source_data[row.id] = {
+                "id": row.id,
+                "name": row.name,
+                "content": row.content,
+                "link": row.link,
+                "source_type": row.source_type,
+                "attributes": row.attributes,
+            }
+    except Exception as e:
+        print("Failed to get source data by relationship ids", e)
+        return {}
+
+    return source_data

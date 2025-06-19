@@ -7,8 +7,8 @@ from utils.token import calculate_tokens
 from opt.graph_retrieval import (
     query_entities_by_ids,
     get_relationship_by_entity_ids,
-    get_chunks_by_ids,
-    get_relationship_by_ids,
+    get_source_data_by_entity_ids,
+    get_source_data_by_relationship_ids,
 )
 from llm.embedding import (
     get_entity_description_embedding,
@@ -19,12 +19,11 @@ from llm.embedding import (
 ##### refine entity
 
 
-def refine_entity(llm_client, issue, entity, relationships, chunks):
-
+def refine_entity(llm_client, issue, entity, relationships, source_data_list):
     format_relationships = []
     consumed_tokens = 0
     for relationship in relationships.values():
-        relationship_str = f"""{relationship['source_entity_name']} -> {relationship['target_entity_name']}: {relationship['description']}"""
+        relationship_str = f"""{relationship['source_entity_name']} -> {relationship['target_entity_name']}: {relationship['relationship_desc']}"""
         consumed_tokens += calculate_tokens(relationship_str)
         if consumed_tokens > 30000:
             break
@@ -34,8 +33,8 @@ def refine_entity(llm_client, issue, entity, relationships, chunks):
 
     # make the token won't exceed 65536
     selected_chunks = []
-    for chunk in chunks:
-        consumed_tokens += calculate_tokens(chunk["text"])
+    for chunk in source_data_list:
+        consumed_tokens += calculate_tokens(chunk["content"])
         if consumed_tokens > 70000:
             selected_chunks = selected_chunks[:-1]
             break
@@ -170,15 +169,17 @@ def process_entity_quality_issue(
                 relationships = get_relationship_by_entity_ids(
                     session, entity_quality_issue["affected_ids"]
                 )
-                chunk_ids = [
-                    r["chunk_id"]
-                    for r in relationships.values()
-                    if r.get("chunk_id") is not None
-                ]
-                chunks = get_chunks_by_ids(session, chunk_ids)
+
+                source_data_list = get_source_data_by_entity_ids(
+                    session, entity_quality_issue["affected_ids"]
+                )
 
                 updated_entity = refine_entity(
-                    llm_client, entity_quality_issue, entities, relationships, chunks
+                    llm_client,
+                    entity_quality_issue,
+                    entities,
+                    relationships,
+                    source_data_list,
                 )
                 print("updated entity", updated_entity)
 
@@ -247,7 +248,7 @@ def merge_entity(llm_client, issue, entities, relationships, chunks):
     format_relationships = []
     consumed_tokens = 0
     for relationship in relationships.values():
-        relationship_str = f"""{relationship['source_entity_name']} -> {relationship['target_entity_name']}: {relationship['description']}"""
+        relationship_str = f"""{relationship['source_entity_name']} -> {relationship['target_entity_name']}: {relationship['relationship_desc']}"""
         consumed_tokens += calculate_tokens(relationship_str)
         if consumed_tokens > 30000:
             break
@@ -256,7 +257,7 @@ def merge_entity(llm_client, issue, entities, relationships, chunks):
     # make the token won't exceed 65536
     selected_chunks = []
     for chunk in chunks:
-        consumed_tokens += calculate_tokens(chunk["text"])
+        consumed_tokens += calculate_tokens(chunk["content"])
         if consumed_tokens > 70000:
             selected_chunks = selected_chunks[:-1]
             break
