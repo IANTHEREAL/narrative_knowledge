@@ -106,71 +106,12 @@ class NarrativeGraphQuery:
             ),
         }
 
-    def get_complete_graph(self) -> Dict:
-        """Get complete graph with all entities and relationships"""
-        # Get all entities
-        with self.session_factory() as db:
-            entities_query = text(
-                """
-                SELECT
-                    e.id,
-                    e.name,
-                    e.description,
-                    e.attributes,
-                    e.created_at
-                FROM entities e
-                ORDER BY e.created_at DESC
-                """
-            )
-            entities_result = db.execute(entities_query)
-            entities_df = pd.DataFrame(entities_result.fetchall())
-
-        # Get all relationships
-        with self.session_factory() as db:
-            relationships_query = text(
-                """
-                SELECT
-                    r.id,
-                    e1.name as source_entity,
-                    r.relationship_desc,
-                    e2.name as target_entity,
-                    r.attributes,
-                    r.created_at
-                FROM relationships r
-                JOIN entities e1 ON r.source_entity_id = e1.id
-                JOIN entities e2 ON r.target_entity_id = e2.id
-                ORDER BY r.created_at DESC
-                """
-            )
-            relationships_result = db.execute(relationships_query)
-            relationships_df = pd.DataFrame(relationships_result.fetchall())
-
-        return {
-            "database_uri": "local" if self.is_local else "external",
-            "total_entities": len(entities_df) if not entities_df.empty else 0,
-            "total_relationships": (
-                len(relationships_df) if not relationships_df.empty else 0
-            ),
-            "entities": entities_df.to_dict("records") if not entities_df.empty else [],
-            "relationships": (
-                relationships_df.to_dict("records")
-                if not relationships_df.empty
-                else []
-            ),
-        }
-
 
 # Convenience functions
 def query_topic_graph(topic_name: str, database_uri: Optional[str] = None) -> Dict:
     """Quick function to get complete topic graph overview from specified database"""
     query = NarrativeGraphQuery(database_uri)
     return query.export_topic_graph_to_json(topic_name)
-
-
-def query_complete_graph(database_uri: Optional[str] = None) -> Dict:
-    """Quick function to get complete graph for all topics"""
-    query = NarrativeGraphQuery(database_uri)
-    return query.get_complete_graph()
 
 
 def search_relationships_by_vector_similarity(
@@ -200,11 +141,15 @@ def search_relationships_by_vector_similarity(
             base_query = """
                 SELECT 
                     r.id,
+                    e1.id as source_entity_id,
                     e1.name as source_entity,
                     e1.description as source_entity_description,
+                    e1.attributes as source_entity_attributes,
                     r.relationship_desc,
+                    e2.id as target_entity_id,
                     e2.name as target_entity,
                     e2.description as target_entity_description,
+                    e2.attributes as target_entity_attributes,
                     r.attributes,
                     r.created_at,
                     VEC_COSINE_DISTANCE(r.relationship_desc_vec, :query_vector) as similarity_distance,
@@ -221,11 +166,15 @@ def search_relationships_by_vector_similarity(
             result = db.execute(text(base_query), params)
             columns = [
                 "id",
+                "source_entity_id",
                 "source_entity",
                 "source_entity_description",
+                "source_entity_attributes",
                 "relationship_desc",
+                "target_entity_id",
                 "target_entity",
                 "target_entity_description",
+                "target_entity_attributes",
                 "attributes",
                 "created_at",
                 "similarity_distance",

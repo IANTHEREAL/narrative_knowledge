@@ -7,12 +7,12 @@ from utils.token import calculate_tokens
 from opt.graph_retrieval import (
     query_entities_by_ids,
     get_relationship_by_entity_ids,
+    get_relationship_by_ids,
     get_source_data_by_entity_ids,
     get_source_data_by_relationship_ids,
 )
 from llm.embedding import (
     get_entity_description_embedding,
-    get_entity_metadata_embedding,
     get_text_embedding,
 )
 
@@ -32,13 +32,13 @@ def refine_entity(llm_client, issue, entity, relationships, source_data_list):
     consumed_tokens = calculate_tokens(json.dumps(format_relationships, indent=2))
 
     # make the token won't exceed 65536
-    selected_chunks = []
-    for chunk in source_data_list:
-        consumed_tokens += calculate_tokens(chunk["content"])
+    selected_source_data = []
+    for source_data in source_data_list:
+        consumed_tokens += calculate_tokens(source_data["content"])
         if consumed_tokens > 70000:
-            selected_chunks = selected_chunks[:-1]
+            selected_source_data = selected_source_data[:-1]
             break
-        selected_chunks.append(chunk)
+        selected_source_data.append(source_data)
 
     improve_entity_quality_prompt = f"""You are an expert assistant specializing in database technologies and knowledge graph curation, tasked with rectifying quality issues within a single entity.
 
@@ -65,9 +65,9 @@ You will be provided with the following information:
         ```json
         {json.dumps(format_relationships, indent=2)}
         ```
-    * **Relevant Chunks (`chunks`):** Text snippets related to the entity. Identify and extract *truly valuable details* from these chunks to correct, clarify, and enhance the entity's description and metadata. Prioritize information that resolves the identified quality issues.
+    * **Relevant Source Knowledge (`source_data`):** Text snippets related to the entity. Identify and extract *truly valuable details* from these source data to correct, clarify, and enhance the entity's description and metadata. Prioritize information that resolves the identified quality issues.
         ```json
-        {json.dumps(selected_chunks, indent=2)}
+        {json.dumps(selected_source_data, indent=2)}
         ```
 
 ## Core Principles for Entity Improvement
@@ -93,17 +93,17 @@ Apply the Core Principles to make informed decisions for each aspect of the enti
     * If the original name was a significant identifier despite being flawed, or if other common names exist, document them as aliases in `meta.aliases` to aid discoverability.
 
 2.  **Description Enhancement (`description`):**
-    * **Synthesize a new, coherent narrative** that integrates corrections, clarifications, and enriched details from all relevant sources (`entity_to_improve`'s original data, `chunks`, `relationships`).
+    * **Synthesize a new, coherent narrative** that integrates corrections, clarifications, and enriched details from all relevant sources (`entity_to_improve`'s original data, `source_data`, `relationships`).
     * Focus on delivering a **clear, accurate, and comprehensive understanding** of the entity, ensuring it directly addresses and resolves the identified quality issue.
     * Ensure a logical flow and highlight key characteristics.
     * Every statement in the description must be traceable to the background information provided.
 
-3.  **Metadata Augmentation/Correction (`meta`):**
-    * Consolidate and correct metadata. Select, update, or add fields that provide **essential context, provenance, or defining attributes** for the improved entity.
-    * Correct any erroneous values based on `chunks` or `relationships`.
-    * Add new metadata fields if they are critical for understanding the entity's corrected definition or provide important context (e.g., a more specific `entity_type`, `data_source_reliability`).
-    * Ensure each metadata field is meaningful, accurate, and supports the improved entity.
-    * All metadata must be derived from or supported by the background information.
+3.  **Attributes Augmentation/Correction (`attributes`):**
+    * Consolidate and correct attributes. Select, update, or add fields that provide **essential context, provenance, or defining attributes** for the improved entity.
+    * Correct any erroneous values based on `source_data` or `relationships`.
+    * Add new attributes if they are critical for understanding the entity's corrected definition or provide important context (e.g., a more specific `entity_type`, `data_source_reliability`).
+    * Ensure each attribute is meaningful, accurate, and supports the improved entity.
+    * All attributes must be derived from or supported by the background information.
 
 ## Output Requirements
 
@@ -113,7 +113,7 @@ Return a single JSON object representing the improved entity. The structure MUST
 {{
 "name": "...",
 "description": "...",
-"meta": {{}}
+"attributes": {{}}
 }}
 ```
 
@@ -188,7 +188,7 @@ def process_entity_quality_issue(
                     and isinstance(updated_entity, dict)
                     and "name" in updated_entity
                     and "description" in updated_entity
-                    and "meta" in updated_entity
+                    and "attributes" in updated_entity
                 ):
                     existing_entity = (
                         session.query(entity_model)
@@ -198,34 +198,28 @@ def process_entity_quality_issue(
                     if existing_entity is not None:
                         existing_entity.name = updated_entity["name"]
                         existing_entity.description = updated_entity["description"]
-                        existing_entity.meta = updated_entity.get("meta", {})
+                        new_attributes = updated_entity.get("attributes", {})
+                        # Safely preserve existing topic_name and category
+                        existing_attrs = existing_entity.attributes or {}
+                        if "topic_name" in existing_attrs:
+                            new_attributes["topic_name"] = existing_attrs["topic_name"]
+                        if "category" in existing_attrs:
+                            new_attributes["category"] = existing_attrs["category"]
+                        existing_entity.attributes = new_attributes
                         existing_entity.description_vec = (
                             get_entity_description_embedding(
                                 updated_entity["name"], updated_entity["description"]
                             )
                         )
-                        existing_entity.meta_vec = get_entity_metadata_embedding(
-                            updated_entity.get("meta", {})
-                        )
                         session.add(existing_entity)
-                    else:
-                        new_entity = entity_model(
-                            id=affected_id,
-                            name=updated_entity["name"],
-                            description=updated_entity["description"],
-                            meta=updated_entity.get("meta", {}),
-                            description_vec=get_entity_description_embedding(
-                                updated_entity["name"], updated_entity["description"]
-                            ),
-                            meta_vec=get_entity_metadata_embedding(
-                                updated_entity.get("meta", {})
-                            ),
+                        print(
+                            f"Success update entity({row_index}) {affected_id} to {updated_entity}"
                         )
-                        session.add(new_entity)
-
-                    print(
-                        f"Success update entity({row_index}) {affected_id} to {updated_entity}"
-                    )
+                    else:
+                        print(
+                            f"Failed to find entity({row_index}) {affected_id} to update"
+                        )
+                        return False
                 else:
                     print(
                         f"Failed to refine entity({row_index}), which is invalid or empty."
@@ -243,7 +237,7 @@ def process_entity_quality_issue(
 ##### merge entities
 
 
-def merge_entity(llm_client, issue, entities, relationships, chunks):
+def merge_entity(llm_client, issue, entities, relationships, source_data_list):
 
     format_relationships = []
     consumed_tokens = 0
@@ -255,13 +249,13 @@ def merge_entity(llm_client, issue, entities, relationships, chunks):
         format_relationships.append(relationship_str)
 
     # make the token won't exceed 65536
-    selected_chunks = []
-    for chunk in chunks:
-        consumed_tokens += calculate_tokens(chunk["content"])
+    selected_source_data = []
+    for source_data in source_data_list:
+        consumed_tokens += calculate_tokens(source_data["content"])
         if consumed_tokens > 70000:
-            selected_chunks = selected_chunks[:-1]
+            selected_source_data = selected_source_data[:-1]
             break
-        selected_chunks.append(chunk)
+        selected_source_data.append(source_data)
 
     merge_entity_prompt = f"""You are an expert assistant specializing in database technologies, tasked with intelligently consolidating redundant entity information.
 
@@ -288,9 +282,9 @@ def merge_entity(llm_client, issue, entities, relationships, chunks):
             ```json
             {json.dumps(format_relationships, indent=2)}
             ```
-        * **Relevant Chunks (`chunks`):** Text snippets related to the entities. Identify and extract *truly valuable details* from these chunks to enhance the merged description and metadata, avoiding trivial or overly specific information unless critical.
+        * **Relevant Source Knowledge (`source_data`):** Text snippets related to the entities. Identify and extract *truly valuable details* from these chunks to enhance the merged description and metadata, avoiding trivial or overly specific information unless critical.
             ```json
-            {json.dumps(selected_chunks, indent=2)}
+            {json.dumps(selected_source_data, indent=2)}
             ```
 
     ## Core Principles for Merging
@@ -315,15 +309,15 @@ def merge_entity(llm_client, issue, entities, relationships, chunks):
         * Choose the **most representative, widely recognized, and unambiguous name**. Document essential aliases in `meta` if they significantly aid discoverability or understanding.
 
     2.  **Description Crafting (`description`):**
-        * **Synthesize a new, coherent narrative** that integrates the most critical and insightful information from all relevant sources (entities, chunks, relationships).
+        * **Synthesize a new, coherent narrative** that integrates the most critical and insightful information from all relevant sources (entities, source_data, relationships).
         * Focus on delivering a **clear and comprehensive understanding** of the entity, ensuring a logical flow and highlighting key characteristics.
         * Every statement in the description must be traceable to the background information provided.
 
-    3.  **Metadata Curation (`meta`):**
+    3.  **Attributes Curation (`attributes`):**
         * Consolidate metadata by selecting fields that provide **essential context, provenance, or defining attributes**.
         * Handle differing values by prioritizing what is most current, relevant, or representative for the merged entity, using arrays or notes for important, non-conflicting variations or unavoidable ambiguities. Be selective to ensure metadata supports, rather than clutters, the entity.
-        * Ensure each metadata field can be understood independently without background information, and is meaningful for the entity.
-        * All metadata must be derived from or supported by the background information.
+        * Ensure each attribute can be understood independently without background information, and is meaningful for the entity.
+        * All attributes must be derived from or supported by the background information.
 
     ## Output Requirements
 
@@ -333,7 +327,7 @@ def merge_entity(llm_client, issue, entities, relationships, chunks):
     {{
     "name": "...",
     "description": "...",
-    "meta": {{}}
+    "attributes": {{}}
     }}
     ```
 
@@ -361,7 +355,7 @@ def merge_entity(llm_client, issue, entities, relationships, chunks):
 
 
 def process_redundancy_entity_issue(
-    llm_client, entity_model, relationship_model, row_key, row_issue
+    llm_client, entity_model, relationship_model, source_graph_mapping_model, row_key, row_issue
 ):
     print(f"start to merge entity({row_key}) for {row_issue}")
     with SessionLocal() as session:
@@ -375,15 +369,12 @@ def process_redundancy_entity_issue(
             relationships = get_relationship_by_entity_ids(
                 session, row_issue["affected_ids"]
             )
-            chunk_ids = [
-                r["chunk_id"]
-                for r in relationships.values()
-                if r.get("chunk_id") is not None
-            ]
-            chunks = get_chunks_by_ids(session, chunk_ids)
+            source_data_list = get_source_data_by_entity_ids(
+                session, row_issue["affected_ids"]
+            )
 
             merged_entity = merge_entity(
-                llm_client, row_issue, entities, relationships, chunks
+                llm_client, row_issue, entities, relationships, source_data_list
             )
             print(f"merged entity({row_key}) {merged_entity}")
 
@@ -392,17 +383,14 @@ def process_redundancy_entity_issue(
                 and isinstance(merged_entity, dict)
                 and "name" in merged_entity
                 and "description" in merged_entity
-                and "meta" in merged_entity
+                and "attributes" in merged_entity
             ):
                 new_entity = entity_model(
                     name=merged_entity["name"],
                     description=merged_entity["description"],
-                    meta=merged_entity.get("meta", {}),
+                    attributes=merged_entity.get("attributes", {}),
                     description_vec=get_entity_description_embedding(
                         merged_entity["name"], merged_entity["description"]
-                    ),
-                    meta_vec=get_entity_metadata_embedding(
-                        merged_entity.get("meta", {})
                     ),
                 )
                 session.add(new_entity)
@@ -426,9 +414,25 @@ def process_redundancy_entity_issue(
                     .where(relationship_model.target_entity_id.in_(original_entity_ids))
                     .values(target_entity_id=merged_entity_id)
                 )
+                # step 3: update source graph mapping table
+                session.execute(
+                    source_graph_mapping_model.__table__.update()
+                    .where(
+                        (source_graph_mapping_model.graph_element_id.in_(original_entity_ids)) &
+                        (source_graph_mapping_model.graph_element_type == "entity")
+                    )
+                    .values(graph_element_id=merged_entity_id)
+                )
+
+                # step 4: delete original entities after all references are updated
+                session.execute(
+                    entity_model.__table__.delete().where(
+                        entity_model.id.in_(original_entity_ids)
+                    )
+                )
 
                 print(
-                    f"Relationships updated for merged entity({row_key}) {merged_entity_id}"
+                    f"Relationships and source mappings updated, original entities deleted for merged entity({row_key}) {merged_entity_id}"
                 )
 
                 session.commit()  # Commit the relationship updates
@@ -446,24 +450,24 @@ def process_redundancy_entity_issue(
 ##### refine relationship quality
 
 
-def refine_relationship_quality(llm_client, issue, entities, relationships, chunks):
+def refine_relationship_quality(llm_client, issue, entities, relationships, source_data_list):
     format_relationships = []
     consumed_tokens = 0
     for relationship in relationships.values():
-        relationship_str = f"""{relationship['source_entity_name']} -> {relationship['target_entity_name']}: {relationship['description']}"""
+        relationship_str = f"""{relationship['source_entity_name']} -> {relationship['target_entity_name']}: {relationship['relationship_desc']}"""
         consumed_tokens += calculate_tokens(relationship_str)
         if consumed_tokens > 30000:
             break
         format_relationships.append(relationship_str)
 
     consumed_tokens = calculate_tokens(json.dumps(format_relationships, indent=2))
-    selected_chunks = []
-    for chunk in chunks:
-        consumed_tokens += calculate_tokens(chunk["text"])
+    selected_source_data = []
+    for source_data in source_data_list:
+        consumed_tokens += calculate_tokens(source_data["content"])
         if consumed_tokens > 70000:
-            selected_chunks = selected_chunks[:-1]
+            selected_source_data = selected_source_data[:-1]
             break
-        selected_chunks.append(chunk)
+        selected_source_data.append(source_data)
 
     refine_relationship_quality_prompt = f"""You are an expert assistant specializing in database technologies and knowledge graph curation, tasked with rectifying quality issues within a single relationship to ensure its meaning is clear, accurate, and truthful by providing an improved description.
 
@@ -487,9 +491,9 @@ You will be provided with the following information:
 
 3.  **Background Information:** Use this to gain a deep understanding of the context, resolve ambiguities/contradictions, and formulate the improved description. **The new description MUST be justifiable by this background information.**
 
-    * **Relevant Chunks (`chunks`):** Text snippets related to the relationship itself or its connected entities. Extract **verifiable details** from these chunks to formulate the improved description.
+    * **Relevant Knowledge (`source_data`):** Text snippets related to the relationship itself or its connected entities. Extract **verifiable details** from these chunks to formulate the improved description.
         ```json
-        {json.dumps(selected_chunks, indent=2)}
+        {json.dumps(selected_source_data, indent=2)}
         ```
 
 ## Core Principles for Crafting the Relationship Description
@@ -497,13 +501,13 @@ You will be provided with the following information:
 Rely on your expert judgment, guided by the following principles:
 
 1.  **Meaningful Clarification & Semantic Accuracy:** The description must make the relationship's purpose and the nature of the connection explicit and precise. It should accurately reflect how the entities interact or are associated.
-2.  **Truthfulness and Evidence-Based Refinement:** **This is paramount.** The improved description MUST be directly supported by evidence found in the `chunks`. **Do NOT invent details, make assumptions, or infer beyond what the provided context clearly indicates.**
+2.  **Truthfulness and Evidence-Based Refinement:** **This is paramount.** The improved description MUST be directly supported by evidence found in the `source_data`. **Do NOT invent details, make assumptions, or infer beyond what the provided context clearly indicates.**
 3.  **Clarity, Unambiguity, and Utility:** Ensure the improved description is easily understandable, its meaning is singular and well-defined, and it provides genuine insight into the connection. Avoid overly generic terms if evidence supports specificity.
 
 ## Guidelines for Formulating the Improved Description
 
 1.  **Deep Analysis of `Relationship Quality Issue`:** Thoroughly understand the specific flaw(s) described in `Relationship Quality Issue` concerning the relationship's clarity or meaning. This is the problem your new description must solve.
-2.  **Comprehensive Contextual Understanding:** Before formulating the description, synthesize information from `relationship_to_improve`'s existing data and relevant `chunks`.
+2.  **Comprehensive Contextual Understanding:** Before formulating the description, synthesize information from `relationship_to_improve`'s existing data and relevant `source_data`.
 3.  **Crafting the New Relationship `description`:**
     * This is your sole output. It must be a **clear, concise, and evidence-based narrative** that explains *precisely how* the source entity connects to or interacts with the target entity.
     * Clearly articulate the nature, purpose, and, if applicable, the direction or mechanism of the connection. For example, instead of "System A affects System B," a better description (if supported by evidence) might be "System A sends real-time transaction data to System B for fraud analysis."
@@ -518,7 +522,8 @@ Return a single JSON object representing the improved relationship. The structur
 {{
 "source_entity_name": "...", # use the entity name in the `relationship_to_improve`
 "target_entity_name": "...", # use the entity name in the `relationship_to_improve`
-"description": "...",
+"relationship_desc": "...",
+"attributes": {{}}
 }}
 ```
 
@@ -569,22 +574,19 @@ def process_relationship_quality_issue(
                     print(f"Failed to find relationship({row_key}) {affected_id}")
                     return False
 
-                chunk_ids = [
-                    r["chunk_id"]
-                    for r in relationships.values()
-                    if r.get("chunk_id") is not None
-                ]
-                chunks = get_chunks_by_ids(session, chunk_ids)
+                source_data_list = get_source_data_by_relationship_ids(
+                    session, relationship_quality_issue["affected_ids"]
+                )
 
                 updated_relationship = refine_relationship_quality(
-                    llm_client, relationship_quality_issue, [], relationships, chunks
+                    llm_client, relationship_quality_issue, [], relationships, source_data_list
                 )
                 print("updated relationship", updated_relationship)
 
                 if (
                     updated_relationship is not None
                     and isinstance(updated_relationship, dict)
-                    and "description" in updated_relationship
+                    and "relationship_desc" in updated_relationship
                 ):
                     existing_relationship = (
                         session.query(relationship_model)
@@ -592,12 +594,24 @@ def process_relationship_quality_issue(
                         .first()
                     )
                     if existing_relationship is not None:
-                        existing_relationship.description = updated_relationship[
-                            "description"
+                        existing_relationship.relationship_desc = updated_relationship[
+                            "relationship_desc"
                         ]
-                        existing_relationship.description_vec = get_text_embedding(
-                            updated_relationship["description"]
+                        existing_relationship.relationship_desc_vec = get_text_embedding(
+                            updated_relationship["relationship_desc"]
                         )
+                        # Update attributes if provided, preserving important existing fields
+                        if "attributes" in updated_relationship:
+                            new_attributes = updated_relationship["attributes"] or {}
+                            # Safely preserve existing important attributes
+                            existing_attrs = existing_relationship.attributes or {}
+                            # Preserve common important fields that should not be lost
+                            important_fields = ["topic_name", "category"]
+                            for field in important_fields:
+                                if field in existing_attrs and field not in new_attributes:
+                                    new_attributes[field] = existing_attrs[field]
+                            existing_relationship.attributes = new_attributes
+                        # If no new attributes provided, keep existing ones unchanged
                         session.add(existing_relationship)
                         print(
                             f"Success update relationship({row_key}) {affected_id} to {updated_relationship}"
@@ -624,11 +638,11 @@ def process_relationship_quality_issue(
 ##### merge redundancy relationship
 
 
-def merge_relationship(llm_client, issue, entities, relationships, chunks):
+def merge_relationship(llm_client, issue, entities, relationships, source_data_list):
     format_relationships = []
     consumed_tokens = 0
     for relationship in relationships.values():
-        relationship_str = f"""{relationship['source_entity_name']}(source_entity_id={relationship['source_entity_id']}) -> {relationship['target_entity_name']}(target_entity_id={relationship['target_entity_id']}): {relationship['description']}"""
+        relationship_str = f"""{relationship['source_entity_name']}(source_entity_id={relationship['source_entity_id']}) -> {relationship['target_entity_name']}(target_entity_id={relationship['target_entity_id']}): {relationship['relationship_desc']}"""
         consumed_tokens += calculate_tokens(relationship_str)
         if consumed_tokens > 30000:
             break
@@ -637,13 +651,13 @@ def merge_relationship(llm_client, issue, entities, relationships, chunks):
     consumed_tokens = calculate_tokens(json.dumps(format_relationships, indent=2))
 
     # make the token won't exceed 65536
-    selected_chunks = []
-    for chunk in chunks:
-        consumed_tokens += calculate_tokens(chunk["text"])
+    selected_source_data = []
+    for source_data in source_data_list:
+        consumed_tokens += calculate_tokens(source_data["content"])
         if consumed_tokens > 70000:
-            selected_chunks = selected_chunks[:-1]
+            selected_source_data = selected_source_data[:-1]
             break
-        selected_chunks.append(chunk)
+        selected_source_data.append(source_data)
 
     merge_relationship_prompt = f"""You are an expert assistant specializing in database technologies and knowledge graph curation, tasked with intelligently consolidating redundant relationship information that is primarily described through simple textual statements.
 
@@ -666,9 +680,9 @@ You will be provided with the following information:
     ```
 
 3.  **Background Information:** Use this to gain a deeper understanding of the context. This is your **sole source of external information** beyond the `relationships_to_merge` themselves for inferring structural elements and enriching the merged relationship.
-    * **Relevant Chunks (`chunks`):** Text snippets related to the named entities, their potential interactions, or relevant schemas/ontologies. Identify and extract *truly valuable details* from these chunks to help infer the relationship `type`, synthesize the `description`, and derive any relevant `properties`.
+    * **Relevant Knowledge (`source_data`):** Text snippets related to the named entities, their potential interactions, or relevant schemas/ontologies. Identify and extract *truly valuable details* from these chunks to help infer the relationship `type`, synthesize the `description`, and derive any relevant `properties`.
         ```json
-        {json.dumps(selected_chunks, indent=2)}
+        {json.dumps(selected_source_data, indent=2)}
         ```
 
 ## Core Principles for Merging Relationships
@@ -678,7 +692,7 @@ Rely on your expert judgment to achieve the following:
 1.  **Meaningful Synthesis and Structuring from Limited Input:**
     * Prioritize creating a **holistic, accurate, and high-quality structured representation of the semantic link**, even from simple descriptive inputs. The merged output should be more valuable than the sum of its parts.
     * Preserve information from all source descriptions that is **genuinely significant, unique, or offers crucial context to the connection itself**.
-    * All aspects of the merged relationship MUST be directly supported by the provided `relationships_to_merge` descriptions and `chunks` – **never invent or assume facts not present. Be conservative with inferences if evidence is weak.**
+    * All aspects of the merged relationship MUST be directly supported by the provided `relationships_to_merge` descriptions and `source_data` – **never invent or assume facts not present. Be conservative with inferences if evidence is weak.**
 
 2.  **Clarity, Coherence, and Utility:**
     * Ensure the synthesized `description` is **clear, its semantic meaning well-defined, logically structured, and easily digestible**.
@@ -694,17 +708,18 @@ The structure MUST be as follows:
 {{
   "source_entity_id": "...", // entity id from input
   "target_entity_id": "...", // entity id from input
-  "description": "...",      // Merged/synthesized relationship description
+  "relationship_desc": "...",      // Merged/synthesized relationship description
+  "attributes": {{}}               // Merged/synthesized relationship attributes
 }}
 ```
 
 ## Final Check: Before finalizing, review the merged relationship:
 
 - Is the inferred type semantically accurate and well-justified by the limited context? Is it appropriately general if specific evidence was lacking?
-- Is the synthesized description clear, comprehensive, and faithful to the combined evidence from input descriptions and chunks?
+- Is the synthesized description clear, comprehensive, and faithful to the combined evidence from input descriptions and source_data?
 - Does the entire merged relationship accurately represent the single best understanding of the underlying connection, given the input constraints?
 - Has redundancy from the input descriptions been effectively consolidated?
-- Are all aspects of the merged relationship directly supported by the provided relationships_to_merge and chunks, without invention?
+- Are all aspects of the merged relationship directly supported by the provided relationships_to_merge and source_data, without invention?
 
 Based on all the provided information and guidelines, exercising your expert judgment to infer and synthesize within the given constraints, generate the merged relationship.
 """
@@ -722,7 +737,7 @@ Based on all the provided information and guidelines, exercising your expert jud
 
 
 def process_redundancy_relationship_issue(
-    llm_client, relationship_model, row_key, row_issue
+    llm_client, relationship_model, source_graph_mapping_model, row_key, row_issue
 ):
     print(f"start to merge relationships {row_key} for {row_issue}")
     with SessionLocal() as session:
@@ -747,21 +762,12 @@ def process_redundancy_relationship_issue(
                 )
                 return True
 
-            documents_set = set()
-            chunks_set = set()
-            for relationship in relationships.values():
-                print(f"relationship: {relationship}")
-                if relationship.get("document_id") is not None:
-                    documents_set.add(relationship["document_id"])
-                if relationship.get("chunk_id") is not None:
-                    chunks_set.add(relationship["chunk_id"])
-
-            chunks = []
-            if len(chunks_set) > 0:
-                chunks = get_chunks_by_ids(session, list(chunks_set))
+            source_data_list = get_source_data_by_relationship_ids(
+                session, row_issue["affected_ids"]
+            )
 
             merged_relationship = merge_relationship(
-                llm_client, row_issue, [], relationships, chunks
+                llm_client, row_issue, [], relationships, source_data_list
             )
             print("merged relationship", merged_relationship)
 
@@ -771,7 +777,7 @@ def process_redundancy_relationship_issue(
             if (
                 merged_relationship is not None
                 and isinstance(merged_relationship, dict)
-                and "description" in merged_relationship
+                and "relationship_desc" in merged_relationship
             ):
                 candidate_source_entity_id = first_relationship["source_entity_id"]
                 candidate_target_entity_id = first_relationship["target_entity_id"]
@@ -790,22 +796,17 @@ def process_redundancy_relationship_issue(
                 if actual_source_entity_id == candidate_target_entity_id:
                     actual_target_entity_id = candidate_source_entity_id
 
+                # Merge attributes intelligently
+                merged_attributes = merged_relationship.get("attributes", {}) or {}
                 new_relationship = relationship_model(
                     source_entity_id=actual_source_entity_id,
                     target_entity_id=actual_target_entity_id,
-                    description=merged_relationship["description"],
-                    description_vec=get_text_embedding(
-                        merged_relationship["description"]
+                    relationship_desc=merged_relationship["relationship_desc"],
+                    relationship_desc_vec=get_text_embedding(
+                        merged_relationship["relationship_desc"]
                     ),
+                    attributes=merged_attributes,
                 )
-                new_meta = next(iter(relationships.values())).get("meta", {})
-                if len(documents_set) > 0:
-                    new_meta["document_ids"] = list(documents_set)
-                    new_relationship.document_id = list(documents_set)[0]
-                if len(chunks_set) > 0:
-                    new_meta["chunk_ids"] = list(chunks_set)
-                    new_relationship.chunk_id = list(chunks_set)[0]
-                new_relationship.meta = new_meta
                 session.add(new_relationship)
                 session.flush()
                 merged_relationship_id = new_relationship.id
@@ -815,14 +816,25 @@ def process_redundancy_relationship_issue(
                 original_relationship_ids = {
                     relationship["id"] for relationship in relationships.values()
                 }
-                # remove the original relationships
+                
+                # Step 1: Update source graph mapping table before deleting original relationships
+                session.execute(
+                    source_graph_mapping_model.__table__.update()
+                    .where(
+                        (source_graph_mapping_model.graph_element_id.in_(original_relationship_ids)) &
+                        (source_graph_mapping_model.graph_element_type == "relationship")
+                    )
+                    .values(graph_element_id=merged_relationship_id)
+                )
+                
+                # Step 2: Remove the original relationships
                 session.execute(
                     relationship_model.__table__.delete().where(
                         relationship_model.id.in_(original_relationship_ids)
                     )
                 )
 
-                print(f"Deleted {len(original_relationship_ids)} relationships")
+                print(f"Source mappings updated and deleted {len(original_relationship_ids)} relationships")
                 session.commit()  # Commit the relationship updates
                 print(f"Merged relationship {row_key} processing complete.")
                 return True
