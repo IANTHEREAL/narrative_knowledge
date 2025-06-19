@@ -40,7 +40,8 @@ class OpenAILikeProvider(BaseLLMProvider):
             messages = [{"role": "user", "content": prompt}]
 
         try:
-            response = self.client.chat.completions.create(
+            response = self._retry_with_exponential_backoff(
+                self.client.chat.completions.create,
                 model=self.model,
                 messages=messages,
                 stream=True,  # Enable streaming
@@ -83,7 +84,7 @@ class OpenAILikeProvider(BaseLLMProvider):
             """
         except Exception as e:
             logger.error(f"Error during OpenAI generation: {e}")
-            raise e
+            raise RuntimeError(f"Error during OpenAI generation: {e}")
 
     def generate_stream(
         self, prompt: str, system_prompt: Optional[str] = None, **kwargs

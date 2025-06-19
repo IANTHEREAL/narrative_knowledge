@@ -12,7 +12,7 @@ class BaseLLMProvider(ABC):
     Abstract base class for LLM providers.
     """
 
-    def __init__(self, model: str, max_retries: int = 1, retry_delay: float = 60):
+    def __init__(self, model: str, max_retries: int = 3, retry_delay: float = 60):
         self.model = model
         self.max_retries = max_retries
         self.retry_delay = retry_delay

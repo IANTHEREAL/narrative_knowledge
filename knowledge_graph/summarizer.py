@@ -4,7 +4,7 @@ from typing import Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from knowledge_graph.models import DocumentSummary
-from utils.json_utils import extract_json
+from utils.json_utils import robust_json_parse
 from setting.db import SessionLocal
 from llm.factory import LLMInterface
 
@@ -257,13 +257,8 @@ Return only the JSON, no other text."""
         try:
             response = self.llm_client.generate(summary_prompt)
 
-            # Extract and clean JSON
-            json_str = extract_json(response)
-            json_str = "".join(
-                char for char in json_str if ord(char) >= 32 or char in "\r\t"
-            )
-
-            summary_data = json.loads(json_str)
+            # Use robust JSON parsing with escape error fixing and LLM fallback
+            summary_data = robust_json_parse(response, self.llm_client, "object")
 
             # Validate required fields
             required_fields = ["summary_content", "key_entities", "main_themes"]
@@ -283,7 +278,7 @@ Return only the JSON, no other text."""
 
         except Exception as e:
             logger.error(
-                f"Error generating summary: {e}, json string {json_str}",
+                f"Error generating summary: {e}",
                 exc_info=True,
             )
             raise e
