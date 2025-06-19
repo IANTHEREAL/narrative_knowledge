@@ -118,13 +118,14 @@ class KnowledgeGraphBuilder:
 
         # Phase 1: Parallel triplet extraction
         logger.info(
-            f"Phase 1: Extracting triplets from {len(documents)} documents in parallel using {self.worker_count} workers"
+            f"Processing {len(documents)} documents in parallel using {self.worker_count} workers"
         )
 
-        def extract_triplets_worker(doc_with_index):
-            """Worker function to extract triplets from a single document."""
+        def extract_and_convert_worker(doc_with_index):
+            """Worker function to extract triplets and immediately convert to graph for a single document."""
             index, doc = doc_with_index
             try:
+                # Extract triplets from document
                 triplets = self.graph_builder.extract_triplets_from_document(
                     topic_name, doc, blueprint, skeletal_graph
                 )
@@ -141,71 +142,37 @@ class KnowledgeGraphBuilder:
                     f"Document {doc['source_name']}: extracted {doc_semantic} narrative + {doc_structural} skeletal triplets"
                 )
 
-                return index, doc, triplets, None
-            except Exception as e:
-                error_msg = f"Failed to extract triplets from {doc['source_name']}: {e}"
-                logger.error(error_msg, exc_info=True)
-                return index, doc, None, error_msg
+                # Immediately convert triplets to graph and save to database
+                entities_created, relationships_created = (
+                    self.graph_builder.convert_triplets_to_graph(
+                        triplets, doc["source_id"]
+                    )
+                )
 
-        # Extract triplets in parallel
-        triplet_results = [None] * len(documents)  # Pre-allocate to maintain order
-        extraction_errors = []
+                logger.info(
+                    f"Document {doc['source_name']}: successfully saved {entities_created} entities, {relationships_created} relationships to database"
+                )
+
+                return (
+                    index,
+                    doc,
+                    len(triplets),
+                    doc_semantic,
+                    doc_structural,
+                    entities_created,
+                    relationships_created,
+                    None,
+                )
+            except Exception as e:
+                error_msg = f"Failed to process document {doc['source_name']}: {e}"
+                logger.error(error_msg, exc_info=True)
+                return index, doc, 0, 0, 0, 0, 0, error_msg
+
+        # Process documents in parallel with immediate database saves
+        processing_results = [None] * len(documents)  # Pre-allocate to maintain order
+        processing_errors = []
 
         indexed_documents = list(enumerate(documents))
-
-        with ThreadPoolExecutor(max_workers=self.worker_count) as executor:
-            # Submit all triplet extraction tasks
-            future_to_doc = {
-                executor.submit(
-                    extract_triplets_worker, doc_with_index
-                ): doc_with_index[1]
-                for doc_with_index in indexed_documents
-            }
-
-            completed_extractions = 0
-            for future in as_completed(future_to_doc):
-                doc = future_to_doc[future]
-                completed_extractions += 1
-                try:
-                    index, doc_result, triplets, error = future.result()
-
-                    if error:
-                        extraction_errors.append(error)
-                        logger.warning(
-                            f"Triplet extraction failed ({completed_extractions}/{len(documents)}): {doc['source_name']}"
-                        )
-                    else:
-                        triplet_results[index] = (doc_result, triplets)
-                        logger.info(
-                            f"Triplet extraction completed ({completed_extractions}/{len(documents)}): {doc['source_name']}"
-                        )
-
-                except Exception as e:
-                    error_msg = f"Unexpected error extracting triplets from {doc['source_name']}: {e}"
-                    extraction_errors.append(error_msg)
-                    logger.error(error_msg, exc_info=True)
-
-        # Check for extraction errors
-        if extraction_errors:
-            logger.warning(
-                f"Triplet extraction completed with {len(extraction_errors)} errors:"
-            )
-            for error in extraction_errors:
-                logger.warning(f"  - {error}")
-
-            raise RuntimeError(
-                f"Failed to extract triplets from {len(extraction_errors)}/{len(documents)} documents"
-            )
-
-        # Filter out None results (failed extractions)
-        successful_results = [
-            result for result in triplet_results if result is not None
-        ]
-
-        # Phase 2: Sequential graph conversion
-        logger.info(
-            "Phase 2: Converting triplets to graph entities and relationships sequentially"
-        )
 
         all_triplets = 0
         semantic_triplets_count = 0
@@ -213,27 +180,69 @@ class KnowledgeGraphBuilder:
         entities_created = 0
         relationships_created = 0
 
-        for doc, triplets in successful_results:
-            # Count different types of triplets
-            doc_semantic = sum(1 for t in triplets if t.get("category") == "narrative")
-            doc_structural = sum(1 for t in triplets if t.get("category") == "skeletal")
+        with ThreadPoolExecutor(max_workers=self.worker_count) as executor:
+            # Submit all document processing tasks
+            future_to_doc = {
+                executor.submit(
+                    extract_and_convert_worker, doc_with_index
+                ): doc_with_index[1]
+                for doc_with_index in indexed_documents
+            }
 
-            all_triplets += len(triplets)
-            semantic_triplets_count += doc_semantic
-            structural_triplets_count += doc_structural
+            completed_processing = 0
+            for future in as_completed(future_to_doc):
+                doc = future_to_doc[future]
+                completed_processing += 1
+                try:
+                    (
+                        index,
+                        doc_result,
+                        triplets_count,
+                        doc_semantic,
+                        doc_structural,
+                        doc_entities,
+                        doc_relationships,
+                        error,
+                    ) = future.result()
+
+                    if error:
+                        processing_errors.append(error)
+                        logger.warning(
+                            f"Document processing failed ({completed_processing}/{len(documents)}): {doc['source_name']}"
+                        )
+                    else:
+                        processing_results[index] = doc_result
+                        # Accumulate counts
+                        all_triplets += triplets_count
+                        semantic_triplets_count += doc_semantic
+                        structural_triplets_count += doc_structural
+                        entities_created += doc_entities
+                        relationships_created += doc_relationships
+
+                        logger.info(
+                            f"Document processing completed ({completed_processing}/{len(documents)}): {doc['source_name']}"
+                        )
+
+                except Exception as e:
+                    error_msg = f"Unexpected error processing document {doc['source_name']}: {e}"
+                    processing_errors.append(error_msg)
+                    logger.error(error_msg, exc_info=True)
+
+        # Log processing summary
+        successful_documents = len([r for r in processing_results if r is not None])
+
+        if processing_errors:
+            logger.warning(
+                f"Document processing completed with {len(processing_errors)} errors:"
+            )
+            for error in processing_errors:
+                logger.warning(f"  - {error}")
 
             logger.info(
-                f"Converting triplets for document {doc['source_name']}: {doc_semantic} narrative + {doc_structural} skeletal triplets"
+                f"Successfully processed {successful_documents}/{len(documents)} documents"
             )
-
-            new_entities_created, new_relationships_created = (
-                self.graph_builder.convert_triplets_to_graph(triplets, doc["source_id"])
-            )
-            entities_created += new_entities_created
-            relationships_created += new_relationships_created
-            logger.info(
-                f"Successfully converted: {new_entities_created} entities, {new_relationships_created} relationships"
-            )
+        else:
+            logger.info(f"All {successful_documents} documents processed successfully")
 
         logger.info(
             f"Total triplets extracted: {all_triplets} ({semantic_triplets_count} semantic + {structural_triplets_count} structural)"
@@ -243,7 +252,8 @@ class KnowledgeGraphBuilder:
         result = {
             "topic_name": topic_name,
             "blueprint_id": blueprint.id,
-            "documents_processed": len(documents),
+            "documents_processed": successful_documents,
+            "documents_failed": len(processing_errors),
             "summaries_generated": len(summaries),
             "triplets_extracted": all_triplets,
             "semantic_triplets": semantic_triplets_count,
@@ -275,6 +285,15 @@ class KnowledgeGraphBuilder:
         logger.info(
             f"Iterative knowledge graph construction completed! Results: {result}"
         )
+
+        # Check if we should raise an exception for processing errors
+        if processing_errors:
+            raise RuntimeError(
+                f"Document processing failed with {len(processing_errors)} errors. "
+                f"Successfully processed {successful_documents}/{len(documents)} documents. "
+                f"Results: {result}"
+            )
+
         return result
 
     def generate_document_summaries(
