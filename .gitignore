@@ -5,3 +5,4 @@ docs/
 uploads/
 test.py
 *.log
+.DS_Store

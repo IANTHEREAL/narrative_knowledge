@@ -8,7 +8,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     Index,
-    JSON,
+    JSON
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.dialects.mysql import LONGTEXT
@@ -20,6 +20,29 @@ from tidb_vector.sqlalchemy import VectorType
 Base = declarative_base()
 
 
+class ContentStore(Base):
+    """Content storage with hash-based deduplication"""
+
+    __tablename__ = "content_store"
+
+    content_hash = Column(String(64), primary_key=True)
+    content = Column(LONGTEXT, nullable=False)
+    content_size = Column(BigInteger, nullable=False)
+    content_type = Column(String(50), nullable=False, default="text/plain")
+    created_at = Column(DateTime, default=func.current_timestamp())
+
+    # Relationships
+    source_data_entries = relationship("SourceData", back_populates="content_store")
+
+    __table_args__ = (
+        Index("idx_content_store_size", "content_size"),
+        Index("idx_content_store_type", "content_type"),
+    )
+
+    def __repr__(self):
+        return f"<ContentStore(hash={self.content_hash[:8]}...)>"
+
+
 class SourceData(Base):
     """Source document entity - serves as data source for knowledge extraction"""
 
@@ -27,8 +50,17 @@ class SourceData(Base):
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     name = Column(String(255), nullable=False)
-    content = Column(LONGTEXT, nullable=True)
+
+    # New: Reference to deduplicated content
+    content_hash = Column(
+        String(64), ForeignKey("content_store.content_hash"), nullable=True
+    )
     link = Column(String(512), nullable=True)
+
+    # Keep original fields for backward compatibility (will be gradually deprecated)
+    content = Column(LONGTEXT, nullable=True)
+    hash = Column(String(64), nullable=True)
+
     source_type = Column(
         Enum(
             "document",
@@ -44,15 +76,13 @@ class SourceData(Base):
         default="document",
     )
     attributes = Column(JSON, nullable=True)
-    hash = Column(
-        String(64), nullable=True
-    )  # SHA-256 hash for content deduplication and change detection
     created_at = Column(DateTime, default=func.current_timestamp())
     updated_at = Column(
         DateTime, default=func.current_timestamp(), onupdate=func.current_timestamp()
     )
 
     # Relationships
+    content_store = relationship("ContentStore", back_populates="source_data_entries")
     block_mappings = relationship(
         "BlockSourceMapping", back_populates="source", cascade="all, delete-orphan"
     )
@@ -60,10 +90,28 @@ class SourceData(Base):
         "SourceGraphMapping", back_populates="source", cascade="all, delete-orphan"
     )
 
+    # Backward compatibility properties
+    @property
+    def effective_content(self):
+        """Get content from content_store if available, otherwise use local content field"""
+        if self.content_store:
+            return self.content_store.content
+        return self.content
+
+    @property
+    def effective_hash(self):
+        """Get hash from content_hash if available, otherwise use local hash field"""
+        return self.content_hash or self.hash
+
     __table_args__ = (
         Index("uq_source_data_link", "link", unique=True),
         Index("idx_source_data_name", "name"),
-        Index("idx_source_source_type", "source_type"),
+        Index("idx_source_data_type", "source_type"),
+        Index("idx_source_data_content_hash", "content_hash"),
+        Index(
+            "idx_source_data_link_time", "link", "created_at"
+        ),  # Support querying by link and time
+        # Removed uq_source_data_link unique constraint to allow multiple versions per link
     )
 
     def __repr__(self):
