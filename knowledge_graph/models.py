@@ -8,7 +8,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     Index,
-    JSON
+    JSON,
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.dialects.mysql import LONGTEXT
@@ -316,9 +316,7 @@ class GraphBuildStatus(Base):
     __tablename__ = "graph_build_status"
 
     topic_name = Column(String(255), primary_key=True, nullable=False)
-    temp_token_id = Column(
-        String(36), primary_key=True, nullable=False
-    )  # Removed FK constraint for multi-db support
+    temp_token_id = Column(String(64), primary_key=True, nullable=False)
     external_database_uri = Column(
         String(512), nullable=False, default=""
     )  # Track external database
