@@ -8,7 +8,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     Index,
-    JSON
+    JSON,
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.dialects.mysql import LONGTEXT
@@ -29,6 +29,8 @@ class ContentStore(Base):
     content = Column(LONGTEXT, nullable=False)
     content_size = Column(BigInteger, nullable=False)
     content_type = Column(String(50), nullable=False, default="text/plain")
+    name = Column(String(255), nullable=False)
+    link = Column(String(512), nullable=True)
     created_at = Column(DateTime, default=func.current_timestamp())
 
     # Relationships
@@ -61,20 +63,7 @@ class SourceData(Base):
     content = Column(LONGTEXT, nullable=True)
     hash = Column(String(64), nullable=True)
 
-    source_type = Column(
-        Enum(
-            "document",
-            "code",
-            "image",
-            "video",
-            "pdf",
-            "spreadsheet",
-            "sql",
-            "markdown",
-        ),
-        nullable=False,
-        default="document",
-    )
+    source_type = Column(String(50), nullable=False, default="text/plain")
     attributes = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=func.current_timestamp())
     updated_at = Column(

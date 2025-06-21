@@ -107,6 +107,8 @@ class KnowledgeBuilder:
                     content=extracted_content,
                     content_size=len(raw_content),
                     content_type=content_type,
+                    name=Path(source_path).stem,
+                    link=doc_link,
                 )
                 db.add(content_store)
                 logger.info(
