@@ -8,7 +8,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     Index,
-    JSON,
+    JSON
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.dialects.mysql import LONGTEXT
