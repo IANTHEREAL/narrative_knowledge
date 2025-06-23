@@ -419,6 +419,11 @@ class GraphBuildDaemon:
                     "topic_name": metadata.get("topic_name", topic_name),
                 }
 
+                # Add custom metadata to attributes if present
+                custom_metadata = metadata.get("custom_metadata")
+                if custom_metadata and isinstance(custom_metadata, dict):
+                    attributes.update(custom_metadata)
+
                 result = kb_builder.extract_knowledge(task["document_file"], attributes)
 
                 if result["status"] != "success":
@@ -439,6 +444,7 @@ class GraphBuildDaemon:
                         "source_name": result["source_name"],
                         "source_content": result["source_content"],
                         "source_link": result["source_link"],
+                        "source_attributes": result["source_attributes"],
                     }
                 )
 

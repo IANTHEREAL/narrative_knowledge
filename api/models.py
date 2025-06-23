@@ -7,15 +7,21 @@ from pydantic import BaseModel, Field
 
 
 class DocumentMetadata(BaseModel):
-    """Metadata for uploaded documents."""
+    """Metadata for uploaded documents with support for custom fields."""
 
     doc_link: str = Field(
         ...,
         description="Link to original document. Recommended to use accessible link; "
         "if not available, you can use custom unique address. Must ensure uniqueness.",
     )
-    topic_name: str
-    database_uri: Optional[str] = None
+    topic_name: str = Field(..., description="Topic name for knowledge graph building")
+    database_uri: Optional[str] = Field(
+        None, description="Database connection string for storing the data"
+    )
+    custom_metadata: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Custom metadata fields that users can define. Any additional key-value pairs for document context.",
+    )
 
 
 class ProcessedDocument(BaseModel):
