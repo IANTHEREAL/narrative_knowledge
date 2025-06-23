@@ -343,7 +343,7 @@ Now, please generate the analysis blueprint for {topic_name} in valid JSON forma
     ) -> List[Dict]:
         """
         Extract enhanced narrative triplets from entire document content to enrich the skeletal graph.
-        Each triplet includes rich entity descriptions and attributes.
+        Each triplet includes rich entity descriptions and temporal information indicating when facts occurred.
         """
 
         # Prepare skeletal graph context
@@ -378,10 +378,33 @@ Extract enhanced narrative triplets from this document. Focus on:
 2. Finding WHY, HOW, WHEN details for existing skeletal relationships
 3. Discovering new supporting relationships that add depth
 
+**CRITICAL: TIME EXTRACTION REQUIREMENTS**
+For each triplet, you MUST identify when the fact occurred or was true. Use this systematic approach:
+
+**Time Identification Strategy:**
+1. **Explicit Time Markers**: Look for direct time references
+   - Absolute dates: "2024年", "January 2023", "Q1 2024"
+   - Relative times: "last year", "next month", "recently"
+   - Versions/iterations: "v2.0", "latest version", "updated system"
+
+2. **Contextual Time Inference**: When no explicit time exists
+   - Document publication/creation date as baseline
+   - Sequential indicators: "after X", "before Y", "following the meeting"
+   - Project phases: "during development", "post-launch", "initial phase"
+   - Business cycles: "this quarter", "fiscal year", "annual review"
+
+3. **Time Expression Standards**:
+   - Precise dates: "2024-03-15"
+   - Year/month: "2024-03" or "March 2024"
+   - Quarters: "Q1 2024"
+   - Relative: "late 2023", "early 2024"
+   - Event-based: "post-project-launch", "pre-system-migration"
+
 Each triplet should include:
 - Rich entity descriptions and attributes
 - Detailed narrative relationships
 - Proper categorization
+- **MANDATORY temporal information**
 
 <document_content>
 {document_content}
@@ -396,7 +419,7 @@ Return a JSON array of enhanced triplets:
             "name": "Entity name",
             "description": "Detailed contextual description of the entity",
             "attributes": {{
-                "entity_type": "one of the suggested types",
+                "entity_type": "one of the suggested types"
             }}
         }},
         "predicate": "Rich narrative relationship with WHO, WHAT, WHEN, WHERE, WHY context",
@@ -404,18 +427,19 @@ Return a JSON array of enhanced triplets:
             "name": "Entity name", 
             "description": "Detailed contextual description of the entity",
             "attributes": {{
-                "entity_type": "one of the suggested types",
+                "entity_type": "one of the suggested types"
             }}
         }},
         "relationship_attributes": {{
-            "timestamp": "time context if available",
-            "sentiment": "positive/negative/neutral"
+            "fact_time": "when this relationship/fact occurred or was true",
+            "time_expression": "original time expression from text if any",
+            "sentiment": "positive|negative|neutral"
         }}
     }}
 ]
 ```
 
-Focus on extracting meaningful relationships that reveal business insights. 
+Focus on extracting meaningful relationships that reveal business insights WITH their temporal context.
 Only extract triplets if they contain valuable knowledge.
 
 Now, please generate the narrative triplets for {topic_name} in valid JSON format.
@@ -478,6 +502,25 @@ Extract structural triplets that build the topic-centric hierarchy. Look for:
 - How this document content relates to the skeletal graph context
 - High-level to detailed relationships within the content
 
+**CRITICAL: TIME EXTRACTION REQUIREMENTS**
+For each structural relationship, you MUST identify when the structure/relationship was established or became true.
+
+**Time Identification Strategy:**
+1. **Structural Time Markers**: Look for when relationships were formed
+   - Organizational changes: "restructured in Q2", "new team formed"
+   - System architecture: "migrated to", "upgraded from", "replaced by"
+   - Process establishment: "implemented since", "adopted in", "started using"
+
+2. **Hierarchical Time Context**: Consider when structural elements emerged
+   - Component introduction: "added feature X", "new module", "latest component"
+   - Dependency establishment: "integrated with", "connected to", "depends on"
+   - Ownership/responsibility: "assigned to", "managed by", "overseen since"
+
+3. **Time Inference for Structure**:
+   - Use document context for undated structural facts
+   - Infer from project timelines and phases
+   - Reference system versions and iterations
+
 Return a JSON array of structural triplets:
 
 ```json
@@ -487,7 +530,7 @@ Return a JSON array of structural triplets:
             "name": "Entity name (could be {topic_name} or one of the structural entities)",
             "description": "Detailed contextual description",
             "attributes": {{
-                "entity_type": "one of the suggested types",
+                "entity_type": "one of the suggested types"
             }}
         }},
         "predicate": "Rich structural relationship describing HOW the subject relates to the object in context of {topic_name}",
@@ -495,19 +538,21 @@ Return a JSON array of structural triplets:
             "name": "Entity name",
             "description": "Detailed contextual description",
             "attributes": {{
-                "entity_type": "one of the suggested types",
+                "entity_type": "one of the suggested types"
             }}
         }},
         "relationship_attributes": {{
-            "timestamp": "time context if available",
-            "sentiment": "positive/negative/neutral"
-            "hierarchy_level": "topic_to_aspect|aspect_to_component|component_to_detail",
+            "fact_time": "when this structural relationship was established or became true",
+            "time_expression": "original time expression from text if any",
+            "sentiment": "positive|negative/neutral",
+            "hierarchy_level": "topic_to_aspect|aspect_to_component|component_to_detail"
         }}
     }}
 ]
 ```
 
-Focus on building clear topic-centric structure. Only extract triplets if they reveal structural relationships.
+Focus on building clear topic-centric structure WITH temporal context.
+Only extract triplets if they reveal structural relationships with their timing.
 
 Now, please generate the structural triplets for {topic_name} in valid JSON format.
 """
