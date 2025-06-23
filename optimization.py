@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 optimization_llm_client = LLMInterface("openai_like", "graph_optimization_14b")
 
-qwen3_critic_client = LLMInterface("openai_like", "us.anthropic.claude-sonnet-4-20250514-v1:0")
+qwen3_critic_client = LLMInterface("bedrock", "us.anthropic.claude-sonnet-4-20250514-v1:0")
 # sonnet_critic_client = LLMInterface("bedrock", "us.anthropic.claude-3-7-sonnet-20250219-v1:0")
 # deepseek_critic_client = LLMInterface("openai_like", "deepseek/deepseek-r1-0528-qwen3-8b")
 critic_clients = {
