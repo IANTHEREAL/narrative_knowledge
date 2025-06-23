@@ -370,6 +370,12 @@ async def upload_documents(
     database_uri: Optional[str] = Form(
         None, description="Database connection string for storing the data"
     ),
+    custom_metadata: Optional[str] = Form(
+        None,
+        description="Optional custom metadata as JSON string. "
+        'Example: \'{"author": "John Doe", "version": "1.0", "priority": "high"}\'. '
+        "These fields will be stored with the document and can be used for filtering and organization.",
+    ),
 ) -> JSONResponse:
     """
     Upload documents for asynchronous knowledge graph building.
@@ -390,6 +396,7 @@ async def upload_documents(
         links: List of links to original documents (must match number of files)
         topic_name: Topic name for knowledge graph building
         database_uri: Database connection string (optional, uses local if not provided)
+        custom_metadata: Optional custom metadata as JSON string with additional document context
 
     Returns:
         JSON response with upload results and task creation status.
@@ -443,6 +450,22 @@ async def upload_documents(
                 detail=f"Database connection failed: {str(e)}",
             )
 
+    # Parse custom metadata if provided
+    parsed_custom_metadata = None
+    if custom_metadata:
+        try:
+            parsed_custom_metadata = json.loads(custom_metadata)
+            if not isinstance(parsed_custom_metadata, dict):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="custom_metadata must be a valid JSON object",
+                )
+        except json.JSONDecodeError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid JSON in custom_metadata: {str(e)}",
+            )
+
     # Process each file with its corresponding link individually
     for file, link in zip(files, links):
         try:
@@ -451,7 +474,10 @@ async def upload_documents(
 
             # Create metadata for this specific file with its corresponding link
             file_metadata = DocumentMetadata(
-                doc_link=link, topic_name=topic_name, database_uri=database_uri
+                doc_link=link,
+                topic_name=topic_name,
+                database_uri=database_uri,
+                custom_metadata=parsed_custom_metadata,
             )
 
             # Save file with metadata and check for duplicates

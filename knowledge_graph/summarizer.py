@@ -84,35 +84,45 @@ class DocumentSummarizer:
             raise e
 
         with self.SessionLocal() as db:
-
             if existing_summary:
-                # Update existing summary
-                existing_summary.summary_content = summary_data["summary_content"]
-                existing_summary.key_entities = summary_data["key_entities"]
-                existing_summary.main_themes = summary_data["main_themes"]
-                existing_summary.business_context = summary_data["business_context"]
-                existing_summary.document_type = summary_data["document_type"]
-                db.commit()
-                db.refresh(existing_summary)
-                return {
-                    "source_id": existing_summary.document_id,
-                    "source_name": f"Summary of {existing_summary.source_data.name if existing_summary.source_data else 'Unknown'}",
-                    "source_content": self._format_summary_content(existing_summary),
-                }
-            else:
-                # Create new summary
-                summary = DocumentSummary(
-                    document_id=document["source_id"],
-                    topic_name=topic_name,
-                    summary_content=summary_data["summary_content"],
-                    key_entities=summary_data["key_entities"],
-                    main_themes=summary_data["main_themes"],
-                    business_context=summary_data["business_context"],
-                    document_type=summary_data["document_type"],
+                # Re-query the existing summary in the current session to ensure it's attached
+                current_summary = (
+                    db.query(DocumentSummary)
+                    .filter(
+                        DocumentSummary.document_id == document["source_id"],
+                        DocumentSummary.topic_name == topic_name,
+                    )
+                    .first()
                 )
-                db.add(summary)
-                db.commit()
-                db.refresh(summary)
+
+                if current_summary:
+                    # Update existing summary
+                    current_summary.summary_content = summary_data["summary_content"]
+                    current_summary.key_entities = summary_data["key_entities"]
+                    current_summary.main_themes = summary_data["main_themes"]
+                    current_summary.business_context = summary_data["business_context"]
+                    current_summary.document_type = summary_data["document_type"]
+                    db.commit()
+                    db.refresh(current_summary)
+                    return {
+                        "source_id": current_summary.document_id,
+                        "source_name": f"Summary of {current_summary.source_data.name if current_summary.source_data else 'Unknown'}",
+                        "source_content": self._format_summary_content(current_summary),
+                    }
+
+            # Create new summary (either no existing summary or re-query failed)
+            summary = DocumentSummary(
+                document_id=document["source_id"],
+                topic_name=topic_name,
+                summary_content=summary_data["summary_content"],
+                key_entities=summary_data["key_entities"],
+                main_themes=summary_data["main_themes"],
+                business_context=summary_data["business_context"],
+                document_type=summary_data["document_type"],
+            )
+            db.add(summary)
+            db.commit()
+            db.refresh(summary)
 
             return {
                 "source_id": summary.document_id,
@@ -223,7 +233,8 @@ class DocumentSummarizer:
         """
         # Use document source content directly
         doc_content = (
-            f"Document: {document['source_name']}\n\n{document['source_content']}"
+            f"Document: {document['source_name']}\n\n{document['source_content']}\n\n"
+            f"Document attributes: {document['source_attributes']}"
         )
 
         # Generate summary prompt

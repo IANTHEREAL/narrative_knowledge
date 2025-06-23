@@ -71,49 +71,10 @@ class KnowledgeGraphBuilder:
             topic_name, documents, force_regenerate_summaries
         )
 
-        # Stage 1: Generate skeletal graph from summaries
-        logger.info("\n=== Stage 1: Generating skeletal graph ===")
-        skeletal_graph = self.graph_builder.generate_skeletal_graph_from_summaries(
-            topic_name, summaries, force_regenerate_blueprint
-        )
-
-        skeletal_context = ""
-        if skeletal_graph and skeletal_graph.get("skeletal_entities"):
-            skeletal_context = f"""The skeletal graph for {topic_name}:
-
-**Core Entities:**
-{json.dumps(skeletal_graph.get('skeletal_entities', []), indent=2)}
-
-**Core Relationships:**
-{json.dumps(skeletal_graph.get('skeletal_relationships', []), indent=2)}"""
-
-        # Stage 2: Generate analysis blueprint using skeletal graph
-        logger.info("\n=== Stage 2: Generating analysis blueprint ===")
         blueprint = self.graph_builder.generate_analysis_blueprint(
             topic_name,
             summaries,
-            skeletal_context,
-            skeletal_graph,
             force_regenerate_blueprint,
-        )
-        if skeletal_graph is None:
-            skeletal_graph = blueprint.attributes.get("skeletal_graph", None)
-
-        # Convert skeletal graph to actual entities and relationships after blueprint generation
-        logger.info(
-            "\n=== Stage 2.5: Converting skeletal graph to entities and relationships ==="
-        )
-        skeletal_entities_created, skeletal_relationships_created = 0, 0
-        if skeletal_graph:
-            skeletal_entities_created, skeletal_relationships_created = (
-                self.graph_builder.convert_skeletal_graph_to_entities_relationships(
-                    skeletal_graph, topic_name, source_id=None
-                )
-            )
-
-        # Stage 3: Extract narrative triplets to enrich skeletal graph
-        logger.info(
-            "\n=== Stage 3: Extracting narrative triplets to enrich skeletal graph ==="
         )
 
         # Phase 1: Parallel triplet extraction
@@ -127,19 +88,16 @@ class KnowledgeGraphBuilder:
             try:
                 # Extract triplets from document
                 triplets = self.graph_builder.extract_triplets_from_document(
-                    topic_name, doc, blueprint, skeletal_graph
+                    topic_name, doc, blueprint
                 )
 
                 # Count different types of triplets
                 doc_semantic = sum(
                     1 for t in triplets if t.get("category") == "narrative"
                 )
-                doc_structural = sum(
-                    1 for t in triplets if t.get("category") == "skeletal"
-                )
 
                 logger.info(
-                    f"Document {doc['source_name']}: extracted {doc_semantic} narrative + {doc_structural} skeletal triplets"
+                    f"Document {doc['source_name']}: extracted {doc_semantic} narrative triplets"
                 )
 
                 # Immediately convert triplets to graph and save to database
@@ -158,7 +116,6 @@ class KnowledgeGraphBuilder:
                     doc,
                     len(triplets),
                     doc_semantic,
-                    doc_structural,
                     entities_created,
                     relationships_created,
                     None,
@@ -166,7 +123,7 @@ class KnowledgeGraphBuilder:
             except Exception as e:
                 error_msg = f"Failed to process document {doc['source_name']}: {e}"
                 logger.error(error_msg, exc_info=True)
-                return index, doc, 0, 0, 0, 0, 0, error_msg
+                return index, doc, 0, 0, 0, 0, error_msg
 
         # Process documents in parallel with immediate database saves
         processing_results = [None] * len(documents)  # Pre-allocate to maintain order
@@ -176,7 +133,6 @@ class KnowledgeGraphBuilder:
 
         all_triplets = 0
         semantic_triplets_count = 0
-        structural_triplets_count = 0
         entities_created = 0
         relationships_created = 0
 
@@ -199,7 +155,6 @@ class KnowledgeGraphBuilder:
                         doc_result,
                         triplets_count,
                         doc_semantic,
-                        doc_structural,
                         doc_entities,
                         doc_relationships,
                         error,
@@ -215,7 +170,6 @@ class KnowledgeGraphBuilder:
                         # Accumulate counts
                         all_triplets += triplets_count
                         semantic_triplets_count += doc_semantic
-                        structural_triplets_count += doc_structural
                         entities_created += doc_entities
                         relationships_created += doc_relationships
 
@@ -244,9 +198,7 @@ class KnowledgeGraphBuilder:
         else:
             logger.info(f"All {successful_documents} documents processed successfully")
 
-        logger.info(
-            f"Total triplets extracted: {all_triplets} ({semantic_triplets_count} semantic + {structural_triplets_count} structural)"
-        )
+        logger.info(f"Total triplets extracted: {all_triplets} (all semantic triplets)")
 
         # Compile results
         result = {
@@ -257,24 +209,10 @@ class KnowledgeGraphBuilder:
             "summaries_generated": len(summaries),
             "triplets_extracted": all_triplets,
             "semantic_triplets": semantic_triplets_count,
-            "structural_triplets": structural_triplets_count,
-            "entities_created": entities_created + skeletal_entities_created,
-            "relationships_created": relationships_created
-            + skeletal_relationships_created,
-            "skeletal_entities_created": skeletal_entities_created,
-            "skeletal_relationships_created": skeletal_relationships_created,
+            "entities_created": entities_created,
+            "relationships_created": relationships_created,
             "narrative_entities_created": entities_created,
             "narrative_relationships_created": relationships_created,
-            "skeletal_graph": {
-                "entities_count": len(skeletal_graph.get("skeletal_entities", [])),
-                "relationships_count": len(
-                    skeletal_graph.get("skeletal_relationships", [])
-                ),
-                "skeletal_entities": skeletal_graph.get("skeletal_entities", []),
-                "skeletal_relationships": skeletal_graph.get(
-                    "skeletal_relationships", []
-                ),
-            },
             "analysis_blueprint": {
                 "suggested_entity_types": blueprint.suggested_entity_types,
                 "key_narrative_themes": blueprint.key_narrative_themes,
@@ -329,15 +267,3 @@ class KnowledgeGraphBuilder:
             List of DocumentSummary objects
         """
         return self.summarizer.get_summaries_for_topic(topic_name)
-
-    def get_skeletal_graph_for_topic(self, topic_name: str) -> Optional[Dict]:
-        """
-        Get skeletal graph for a topic.
-
-        Args:
-            topic_name: Topic name to get skeletal graph for
-
-        Returns:
-            Dict with skeletal graph data or None if not found
-        """
-        return self.graph_builder.get_skeletal_graph_for_topic(topic_name)

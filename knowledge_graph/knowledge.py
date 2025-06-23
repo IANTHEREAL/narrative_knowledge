@@ -75,6 +75,7 @@ class KnowledgeBuilder:
                     "source_content": existing_source.effective_content,
                     "source_link": existing_source.link,
                     "source_name": existing_source.name,
+                    "source_attributes": existing_source.attributes,
                 }
 
         # Read raw file content first for hash calculation
@@ -143,4 +144,5 @@ class KnowledgeBuilder:
                 "source_link": source_data.link,
                 "source_name": source_data.name,
                 "source_type": content_type,
+                "source_attributes": attributes,
             }
