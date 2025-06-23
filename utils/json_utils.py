@@ -223,7 +223,7 @@ def extract_json(response: str) -> str:
 
     json_str = find_first_json_object(response)
     if not json_str:
-        raise ValueError("No valid JSON array found in the response.")
+        raise ValueError(f"No valid JSON array found in the response, {response}")
 
     return "".join(char for char in json_str if ord(char) >= 32 or char in "\r\t")
 
@@ -246,7 +246,7 @@ def extract_json_array(response: str) -> str:
 
     json_str = find_first_json_array(response)
     if not json_str:
-        raise ValueError("No valid JSON array found in the response.")
+        raise ValueError(f"No valid JSON array found in the response, {response}")
 
     return "".join(char for char in json_str if ord(char) >= 32 or char in "\r\t")
 

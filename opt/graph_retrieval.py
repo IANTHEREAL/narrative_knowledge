@@ -1,12 +1,23 @@
+import hashlib
+
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
+from utils.uuid_utils import validate_uuid_list
 
-def query_entities_by_ids(db: Session, entities_id: list[int]):
+
+def query_entities_by_ids(db: Session, entities_id: list[str]):
+    # Validate input IDs to ensure they are proper UUIDs
+    valid_ids = validate_uuid_list(entities_id)
+
+    if not valid_ids:
+        print("No valid UUIDs provided for entity query")
+        return {}
+
     sql = text(
         f"""SELECT id, name, description, attributes from entities where id in :entities_id"""
     )
-    res = db.execute(sql, {"entities_id": entities_id})
+    res = db.execute(sql, {"entities_id": valid_ids})
     entities = {}
 
     try:
@@ -24,7 +35,14 @@ def query_entities_by_ids(db: Session, entities_id: list[int]):
     return entities
 
 
-def get_relationship_by_entity_ids(db: Session, entity_ids: list[int]):
+def get_relationship_by_entity_ids(db: Session, entity_ids: list[str]):
+    # Validate input IDs to ensure they are proper UUIDs
+    valid_ids = validate_uuid_list(entity_ids)
+
+    if not valid_ids:
+        print("No valid UUIDs provided for relationship query by entity IDs")
+        return {}
+
     sql = text(
         f"""SELECT rel.id, source_entity.name as source_entity_name, target_entity.name as target_entity_name, rel.relationship_desc, rel.attributes
                FROM relationships as rel
@@ -32,7 +50,7 @@ def get_relationship_by_entity_ids(db: Session, entity_ids: list[int]):
                LEFT JOIN entities as target_entity ON rel.target_entity_id = target_entity.id
         where rel.source_entity_id in :entity_ids or rel.target_entity_id in :entity_ids """
     )
-    res = db.execute(sql, {"entity_ids": entity_ids})
+    res = db.execute(sql, {"entity_ids": valid_ids})
     background_relationships = {}
 
     try:
@@ -51,7 +69,14 @@ def get_relationship_by_entity_ids(db: Session, entity_ids: list[int]):
     return background_relationships
 
 
-def get_relationship_by_ids(db: Session, relationship_ids: list[int]):
+def get_relationship_by_ids(db: Session, relationship_ids: list[str]):
+    # Validate input IDs to ensure they are proper UUIDs
+    valid_ids = validate_uuid_list(relationship_ids)
+
+    if not valid_ids:
+        print("No valid UUIDs provided for relationship query by IDs")
+        return {}
+
     sql = text(
         f"""
         SELECT 
@@ -67,7 +92,7 @@ def get_relationship_by_ids(db: Session, relationship_ids: list[int]):
         where rel.id in :relationship_ids
     """
     )
-    res = db.execute(sql, {"relationship_ids": relationship_ids})
+    res = db.execute(sql, {"relationship_ids": valid_ids})
     background_relationships = {}
 
     try:
@@ -88,13 +113,20 @@ def get_relationship_by_ids(db: Session, relationship_ids: list[int]):
     return background_relationships
 
 
-def get_source_data_by_ids(db: Session, source_data_ids: list[int]):
+def get_source_data_by_ids(db: Session, source_data_ids: list[str]):
+    # Validate input IDs to ensure they are proper UUIDs
+    valid_ids = validate_uuid_list(source_data_ids)
+
+    if not valid_ids:
+        print("No valid UUIDs provided for source data query by IDs")
+        return {}
+
     sql = text(
         f"""
         SELECT id, name, content, link, source_type, attributes from source_data where id in :source_data_ids
     """
     )
-    res = db.execute(sql, {"source_data_ids": source_data_ids})
+    res = db.execute(sql, {"source_data_ids": valid_ids})
     source_data = {}
 
     try:
@@ -114,7 +146,14 @@ def get_source_data_by_ids(db: Session, source_data_ids: list[int]):
     return source_data
 
 
-def get_source_data_by_entity_ids(db: Session, entity_ids: list[int]):
+def get_source_data_by_entity_ids(db: Session, entity_ids: list[str]):
+    # Validate input IDs to ensure they are proper UUIDs
+    valid_ids = validate_uuid_list(entity_ids)
+
+    if not valid_ids:
+        print("No valid UUIDs provided for source data query by entity IDs")
+        return []
+
     sql = text(
         f"""
         SELECT 
@@ -130,12 +169,13 @@ def get_source_data_by_entity_ids(db: Session, entity_ids: list[int]):
         AND sgm.graph_element_id IN :entity_ids
     """
     )
-    res = db.execute(sql, {"entity_ids": entity_ids})
+    res = db.execute(sql, {"entity_ids": valid_ids})
     source_data = {}
 
     try:
         for row in res.fetchall():
-            source_data[row.id] = {
+            content_hash = hashlib.sha256(row.content.encode()).hexdigest()
+            source_data[content_hash] = {
                 "id": row.id,
                 "name": row.name,
                 "content": row.content,
@@ -147,10 +187,17 @@ def get_source_data_by_entity_ids(db: Session, entity_ids: list[int]):
         print("Failed to get source data by entity ids", e)
         return {}
 
-    return source_data
+    return list(source_data.values())
 
 
-def get_source_data_by_relationship_ids(db: Session, relationship_ids: list[int]):
+def get_source_data_by_relationship_ids(db: Session, relationship_ids: list[str]):
+    # Validate input IDs to ensure they are proper UUIDs
+    valid_ids = validate_uuid_list(relationship_ids)
+
+    if not valid_ids:
+        print("No valid UUIDs provided for source data query by relationship IDs")
+        return []
+
     sql = text(
         f"""
         SELECT 
@@ -166,12 +213,13 @@ def get_source_data_by_relationship_ids(db: Session, relationship_ids: list[int]
         AND sgm.graph_element_id IN :relationship_ids
     """
     )
-    res = db.execute(sql, {"relationship_ids": relationship_ids})
+    res = db.execute(sql, {"relationship_ids": valid_ids})
     source_data = {}
 
     try:
         for row in res.fetchall():
-            source_data[row.id] = {
+            content_hash = hashlib.sha256(row.content.encode()).hexdigest()
+            source_data[content_hash] = {
                 "id": row.id,
                 "name": row.name,
                 "content": row.content,
@@ -183,4 +231,4 @@ def get_source_data_by_relationship_ids(db: Session, relationship_ids: list[int]
         print("Failed to get source data by relationship ids", e)
         return {}
 
-    return source_data
+    return list(source_data.values())

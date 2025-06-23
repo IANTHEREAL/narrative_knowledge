@@ -62,6 +62,7 @@ def start_daemon(args):
             llm_client=llm_client,
             embedding_func=get_text_embedding,
             check_interval=args.check_interval,
+            worker_count=args.worker_count,
         )
 
         # Setup signal handlers for graceful shutdown
@@ -199,7 +200,12 @@ Examples:
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Log level (default: INFO)",
     )
-
+    start_parser.add_argument(
+        "--worker-count",
+        type=int,
+        default=5,
+        help="Number of workers to use (default: 5)",
+    )
     # Status subcommand
     status_parser = subparsers.add_parser("status", help="Show daemon and task status")
     status_parser.add_argument(

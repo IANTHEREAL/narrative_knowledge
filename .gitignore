@@ -6,3 +6,5 @@ uploads/
 test.py
 *.log
 .DS_Store
+tmp_run.ipynb
+test_data.pkl

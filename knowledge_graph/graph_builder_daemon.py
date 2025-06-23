@@ -31,6 +31,7 @@ class GraphBuildDaemon:
         llm_client: Optional[LLMInterface] = None,
         embedding_func=None,
         check_interval: int = 60,
+        worker_count: int = 5,
     ):
         """
         Initialize the graph build daemon.
@@ -44,6 +45,7 @@ class GraphBuildDaemon:
         self.embedding_func = embedding_func or get_text_embedding
         self.check_interval = check_interval
         self.is_running = False
+        self.worker_count = worker_count
 
     def start(self):
         """Start the daemon."""
@@ -470,7 +472,7 @@ class GraphBuildDaemon:
             )
 
             graph_builder = KnowledgeGraphBuilder(
-                self.llm_client, self.embedding_func, session_factory
+                self.llm_client, self.embedding_func, session_factory, self.worker_count
             )
             result = graph_builder.build_knowledge_graph(topic_name, extracted_sources)
 

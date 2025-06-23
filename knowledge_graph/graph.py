@@ -120,6 +120,11 @@ Now, please generate the skeletal graph for {topic_name} in valid JSON format.
 
         try:
             response = self.llm_client.generate(skeletal_prompt, max_tokens=8192)
+        except Exception as e:
+            logger.error(f"Error generating skeletal graph: {e}")
+            raise RuntimeError(f"Error generating skeletal graph: {e}")
+
+        try:
             skeletal_data = self._parse_llm_json_response(response, "object")
 
             logger.info(
@@ -209,6 +214,11 @@ Now, please generate the analysis blueprint for {topic_name} in valid JSON forma
             try:
                 logger.info(f"Generating analysis blueprint for {topic_name}")
                 response = self.llm_client.generate(blueprint_prompt, max_tokens=4096)
+            except Exception as e:
+                logger.error(f"Error generating analysis blueprint: {e}")
+                raise RuntimeError(f"Error generating analysis blueprint: {e}")
+
+            try:
                 blueprint_data = self._parse_llm_json_response(response, "object")
 
                 # Create and save blueprint with skeletal graph from previous stage
@@ -413,8 +423,12 @@ Now, please generate the narrative triplets for {topic_name} in valid JSON forma
 
         try:
             response = self.llm_client.generate(extraction_prompt, max_tokens=16384)
-            triplets = self._parse_llm_json_response(response, "array")
+        except Exception as e:
+            logger.error(f"Error generating narrative triplets: {e}")
+            raise RuntimeError(f"Error generating narrative triplets: {e}")
 
+        try:
+            triplets = self._parse_llm_json_response(response, "array")
             # Add metadata to each triplet
             for triplet in triplets:
                 triplet.update({"topic_name": topic_name, "category": "narrative"})
@@ -500,6 +514,11 @@ Now, please generate the structural triplets for {topic_name} in valid JSON form
 
         try:
             response = self.llm_client.generate(structural_prompt, max_tokens=16384)
+        except Exception as e:
+            logger.error(f"Error generating structural triplets: {e}")
+            raise RuntimeError(f"Error generating structural triplets: {e}")
+
+        try:
             triplets = self._parse_llm_json_response(response, "array")
 
             # Add metadata to each triplet

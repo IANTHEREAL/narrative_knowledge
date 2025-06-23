@@ -1,7 +1,8 @@
 import json
+import os
 import logging
 
-from setting.db import SessionLocal
+from setting.db import db_manager
 from utils.json_utils import extract_json
 from utils.token import calculate_tokens
 from opt.graph_retrieval import (
@@ -15,9 +16,11 @@ from llm.embedding import (
     get_entity_description_embedding,
     get_text_embedding,
 )
+from llm.factory import LLMInterface
+
+session_factory = db_manager.get_session_factory(os.getenv("GRAPH_DATABASE_URI"))
 
 ##### refine entity
-
 
 def refine_entity(llm_client, issue, entity, relationships, source_data_list):
     format_relationships = []
@@ -40,7 +43,7 @@ def refine_entity(llm_client, issue, entity, relationships, source_data_list):
             break
         selected_source_data.append(source_data)
 
-    improve_entity_quality_prompt = f"""You are an expert assistant specializing in database technologies and knowledge graph curation, tasked with rectifying quality issues within a single entity.
+    improve_entity_quality_prompt = f"""You are an expert assistant specializing in technologies and knowledge graph curation, tasked with rectifying quality issues within a single entity.
 
 ## Objective
 
@@ -107,13 +110,13 @@ Apply the Core Principles to make informed decisions for each aspect of the enti
 
 ## Output Requirements
 
-Return a single JSON object representing the improved entity. The structure MUST be as follows:
+Return a single JSON object (surrounded by ```json and ```) representing the improved entity. The structure MUST be as follows:
 
 ```json
 {{
-"name": "...",
-"description": "...",
-"attributes": {{}}
+    "name": "...",
+    "description": "...",
+    "attributes": {{}}
 }}
 ```
 
@@ -123,16 +126,17 @@ Final Check: Before finalizing, review the improved entity:
 - Are the original quality issues demonstrably resolved?
 - Is it clear, concise, accurate, yet comprehensive?
 - Does it truly represent the best understanding of the underlying concept based on the provided information?
-- Are all technical terms, identifiers, and features sufficiently contextualized or explained to be understood by a reasonably knowledgeable audience in database technologies?
+- Are all technical terms, identifiers, and features sufficiently contextualized or explained to be understood by a reasonably knowledgeable audience in technologies?
 
 Based on all the provided information and guidelines, exercising your expert judgment, generate the improved entity.
 """
 
     try:
         token_count = calculate_tokens(improve_entity_quality_prompt)
+        print(f"improve entity quality prompt token count: {token_count}")
         response = llm_client.generate(
             improve_entity_quality_prompt, max_tokens=token_count + 1024
-        )
+            )
         json_str = extract_json(response)
         json_str = "".join(
             char for char in json_str if ord(char) >= 32 or char in "\r\t"
@@ -147,7 +151,7 @@ def process_entity_quality_issue(
     llm_client, entity_model, relationship_model, row_index, row_issue
 ):
     print(f"start to process entity {row_index}")
-    with SessionLocal() as session:
+    with session_factory() as session:
         try:
             for affected_id in row_issue["affected_ids"]:
                 entity_quality_issue = {
@@ -199,6 +203,8 @@ def process_entity_quality_issue(
                         existing_entity.name = updated_entity["name"]
                         existing_entity.description = updated_entity["description"]
                         new_attributes = updated_entity.get("attributes", {})
+                        if isinstance(new_attributes, str):
+                            new_attributes = json.loads(new_attributes)
                         # Safely preserve existing topic_name and category
                         existing_attrs = existing_entity.attributes or {}
                         if "topic_name" in existing_attrs:
@@ -244,7 +250,7 @@ def merge_entity(llm_client, issue, entities, relationships, source_data_list):
     for relationship in relationships.values():
         relationship_str = f"""{relationship['source_entity_name']} -> {relationship['target_entity_name']}: {relationship['relationship_desc']}"""
         consumed_tokens += calculate_tokens(relationship_str)
-        if consumed_tokens > 30000:
+        if consumed_tokens > 20000:
             break
         format_relationships.append(relationship_str)
 
@@ -257,100 +263,137 @@ def merge_entity(llm_client, issue, entities, relationships, source_data_list):
             break
         selected_source_data.append(source_data)
 
-    merge_entity_prompt = f"""You are an expert assistant specializing in database technologies, tasked with intelligently consolidating redundant entity information.
+    merge_entity_prompt = f"""You are an expert assistant specializing in technologies and knowledge graph curation, tasked with intelligently consolidating redundant entity information into a single, authoritative, and comprehensive entity representation.
 
-    ## Objective
+## Objective
 
-    Your primary goal is to synthesize a **single, authoritative, and high-quality entity** from a group of redundant ones. This merged entity should be more comprehensive, coherent, **meaningful, and self-contained** than any individual source entity. It's not just about combining data, but about creating a **genuinely improved representation** that effectively reduces redundancy while maximizing clarity, utility, and **ease of understanding for a knowledgeable audience (which may include those not deeply expert in every specific nuance).** Prioritize information significance, contextual accuracy, and overall comprehensibility.
+Your primary goal is to synthesize a **single, high-quality entity** that:
+1. **Eliminates redundancy** while preserving all valuable information across different abstraction levels
+2. **Handles complex multi-level scenarios** including common-specific, hierarchical, and peer-level entity combinations
+3. **Maintains semantic accuracy** based strictly on provided evidence
+4. **Optimizes clarity and utility** for knowledge graph applications
 
-    ## Input Data
+## Input Data Structure
 
-    You will be provided with the following information:
+### 1. Redundancy Issue (`issue`)
+Describes why these entities are considered redundant and need merging.
+```json
+{json.dumps(issue, indent=2)}
+```
 
-    1.  **Redundancy Issue (`issue`):** Describes why these entities are considered redundant and need merging.
-        ```json
-        {json.dumps(issue, indent=2)}
-        ```
+### 2. Entities to Merge (`entities`)
+A list of entity objects that require consolidation, potentially spanning different abstraction levels.
+```json
+{json.dumps(entities, indent=2)}
+```
 
-    2.  **Entities to Merge (`entities`):** A list of the entity objects that require merging.
-        ```json
-        {json.dumps(entities, indent=2)}
-        ```
+### 3. Background Information
+Additional context to enrich the merged entity:
 
-    3.  **Background Information:** Use this to gain a deeper understanding and to enrich the merged entity, ensuring all *genuinely relevant* context is captured or informs the synthesis.
-        * **Relevant Relationships (`relationships`):** Describes how the redundant entities relate to other entities. Use this to understand the broader context and to inform the selection and presentation of relational insights within the description if they add significant value.
-            ```json
-            {json.dumps(format_relationships, indent=2)}
-            ```
-        * **Relevant Source Knowledge (`source_data`):** Text snippets related to the entities. Identify and extract *truly valuable details* from these chunks to enhance the merged description and metadata, avoiding trivial or overly specific information unless critical.
-            ```json
-            {json.dumps(selected_source_data, indent=2)}
-            ```
+#### Relevant Relationships (`relationships`)
+Describes how entities relate to other entities in the knowledge graph.
+```json
+{json.dumps(format_relationships, indent=2)}
+```
 
-    ## Core Principles for Merging
+#### Relevant Source Knowledge (`source_data`)
+Text snippets related to the entities for context enhancement.
+```json
+{json.dumps(selected_source_data, indent=2)}
+```
 
-    Rely on your expert judgment to achieve the following:
+## Core Principles for Merging
 
-    1.  **Meaningful Synthesis for Enhanced Understanding:**
-        * Prioritize creating a **holistic, accurate, and high-quality representation** that is more valuable than the sum of its parts.
-        * Preserve information that is **genuinely significant, unique, or offers crucial context**. Critically assess if all details add value or if some can be omitted for clarity and conciseness.
-        * Resolve discrepancies thoughtfully, aiming for a coherent narrative that explains differing perspectives if they are important for a complete understanding.
-        * All enhancements MUST be directly supported by the provided background information - never invent or assume facts not present in the input data.
+### 1. Abstraction Level Analysis Strategy
+- **Level Identification**: Recognize different abstraction levels (concept → product → version → instance)
+- **Hierarchical Mapping**: Understand how entities relate across abstraction boundaries
+- **Optimal Scope Selection**: Choose the abstraction level that maximizes knowledge graph utility
+- **Information Layering**: Preserve valuable details from all levels without losing semantic clarity
 
-    2.  **Clarity, Coherence, and Utility:**
-        * Ensure the merged entity is **clear, logically structured, and easily digestible**.
-        * Strive for an optimal balance: comprehensive enough to be authoritative, yet concise enough for practical use. **Avoid information overload and undue complexity.**
+### 2. Context-Driven Integration Approach
+- **Evidence-Based Prioritization**: Use `source_data` and `relationships` to guide integration decisions
+- **Usage Pattern Analysis**: Consider how merged entity will be used in the knowledge graph
+- **Connection Density Evaluation**: Prioritize entities with more relationships and contextual relevance
+- **Semantic Coherence**: Ensure the merged result represents a coherent, unified concept
 
-    ## Merging Guidelines (Applying Principles with Strategic Judgment)
+### 3. Information Synthesis and Quality Enhancement
+- **Comprehensive Integration**: Combine all unique and valuable information from source entities
+- **Conflict Resolution**: When information conflicts, prioritize the most specific and evidence-supported version
+- **Redundancy Elimination**: Remove duplicate information while preserving unique insights from each source
+- **Contextual Enrichment**: Add meaningful structure that enhances understanding across abstraction levels
 
-    Apply the Core Principles to make informed decisions for each aspect of the entity:
+## Advanced Merging Guidelines
 
-    1.  **Name Selection (`name`):**
-        * Choose the **most representative, widely recognized, and unambiguous name**. Document essential aliases in `meta` if they significantly aid discoverability or understanding.
+### Multi-Level Entity Analysis Framework
 
-    2.  **Description Crafting (`description`):**
-        * **Synthesize a new, coherent narrative** that integrates the most critical and insightful information from all relevant sources (entities, source_data, relationships).
-        * Focus on delivering a **clear and comprehensive understanding** of the entity, ensuring a logical flow and highlighting key characteristics.
-        * Every statement in the description must be traceable to the background information provided.
+#### Step 1: Entity Relationship Classification
+Identify the relationship pattern among entities to merge:
+- **Pure Hierarchical**: Concept → Specific → Instance (Database → MySQL → MySQL 8.0 → prod-instance)
+- **Peer-Level Variants**: Similar abstraction entities with different focuses
+- **Mixed Complexity**: Combination of hierarchical and peer relationships
+- **Specialization Chain**: Progressive refinement of the same core concept
 
-    3.  **Attributes Curation (`attributes`):**
-        * Consolidate metadata by selecting fields that provide **essential context, provenance, or defining attributes**.
-        * Handle differing values by prioritizing what is most current, relevant, or representative for the merged entity, using arrays or notes for important, non-conflicting variations or unavoidable ambiguities. Be selective to ensure metadata supports, rather than clutters, the entity.
-        * Ensure each attribute can be understood independently without background information, and is meaningful for the entity.
-        * All attributes must be derived from or supported by the background information.
+#### Step 2: Optimal Abstraction Level Selection
+Apply decision criteria to choose the primary abstraction level:
 
-    ## Output Requirements
+**Selection Priority Rules:**
+1. **Relationship Density**: Entity with most connections in the knowledge graph
+2. **Information Richness**: Entity providing the most comprehensive and useful context
+3. **Usage Frequency**: Most commonly referenced entity in `source_data`
+4. **Semantic Centrality**: Entity that best represents the core concept across all levels
 
-    Return a single JSON object representing the merged entity. The structure MUST be as follows:
+#### Step 3: Information Integration Strategy
+Based on the selected primary level, apply appropriate integration approach:
 
-    ```json
-    {{
-    "name": "...",
-    "description": "...",
-    "attributes": {{}}
-    }}
-    ```
+**For Concept-Level Primary**: Integrate specific details as contextual examples and variants
+**For Product-Level Primary**: Balance general context with specific implementation details
+**For Instance-Level Primary**: Maintain specific focus while providing broader conceptual context
+**For Mixed Scenarios**: Create layered descriptions that acknowledge multiple valid perspectives
 
-    **Final Check:** Before finalizing, review the merged entity:
-    * Is it a high-quality, useful piece of information?
-    * Is it clear, concise, yet comprehensive?
-    * Does it truly represent the best understanding of the underlying concept?
-    * **Are all technical terms, identifiers, and features sufficiently contextualized or explained to be understood by a reasonably knowledgeable audience in database technologies?**
+### Advanced Attribute Consolidation
 
-    Based on all the provided information and guidelines, exercising your expert judgment, generate the merged entity.
-    """
+#### Multi-Level Attribute Handling
+- **Level-Specific Grouping**: Organize attributes by abstraction level when beneficial
+- **Hierarchical Preservation**: Use nested structures to maintain level relationships
+- **Conflict Resolution**: Apply evidence-based priority rules for conflicting attribute values
+- **Semantic Enhancement**: Add attributes that clarify scope and abstraction boundaries
+
+#### Attribute Integration Strategies
+- **Union Strategy**: Combine non-conflicting attributes from all sources
+- **Layered Strategy**: Group attributes by abstraction level for complex scenarios
+- **Contextual Strategy**: Prioritize attributes that enhance understanding of the merged entity's scope
+- **Traceability Strategy**: Maintain connection to original abstraction levels when valuable
+
+## Output Requirements
+
+Return a single JSON object representing the merged entity (surrounding by ```json and ```):
+
+```json
+{{
+  "name": "Optimally selected name that represents the merged entity's scope and primary abstraction level",
+  "description": "Comprehensive, layered description that integrates information from all source entities while maintaining semantic coherence. Should flow logically from general context to specific details, clearly indicating the scope and abstraction boundaries of the merged entity.",
+  "attributes": {{
+    // Strategically consolidated attributes that enhance understanding
+    // May include level-specific groupings for complex multi-level scenarios
+    // All attributes must be evidence-supported and add meaningful value
+    // Consider using nested structures for hierarchical information when beneficial
+  }}
+}}
+```
+
+Based on all the provided information and guidelines, exercising your expert judgment, generate the merged entity."""
 
     try:
         token_count = calculate_tokens(merge_entity_prompt)
         print(f"merge entity prompt token count: {token_count}")
-        response = llm_client.generate(merge_entity_prompt, max_tokens=8192)
+        response = llm_client.generate(merge_entity_prompt, max_tokens=token_count + 1024)
         json_str = extract_json(response)
         json_str = "".join(
             char for char in json_str if ord(char) >= 32 or char in "\r\t"
         )
         return json.loads(json_str)
     except Exception as e:
-        print("Failed to merge entity", e)
+        print("Failed to merge entity", e, response)
         return None
 
 
@@ -358,7 +401,7 @@ def process_redundancy_entity_issue(
     llm_client, entity_model, relationship_model, source_graph_mapping_model, row_key, row_issue
 ):
     print(f"start to merge entity({row_key}) for {row_issue}")
-    with SessionLocal() as session:
+    with session_factory() as session:
         try:
             entities = query_entities_by_ids(session, row_issue["affected_ids"])
             print(f"pending entities({row_key})", entities)
@@ -469,11 +512,15 @@ def refine_relationship_quality(llm_client, issue, entities, relationships, sour
             break
         selected_source_data.append(source_data)
 
-    refine_relationship_quality_prompt = f"""You are an expert assistant specializing in database technologies and knowledge graph curation, tasked with rectifying quality issues within a single relationship to ensure its meaning is clear, accurate, and truthful by providing an improved description.
+    refine_relationship_quality_prompt = f"""You are an expert assistant specializing in technologies and knowledge graph curation, tasked with rectifying quality issues within a single relationship to ensure its meaning is clear, accurate, and truthful by providing an improved description and optimized attributes.
 
 ## Objective
 
-Your primary goal is to analyze a problematic relationship and its surrounding context to craft an **accurate, coherent, and semantically meaningful textual description of the connection** between its source and target entities. This improved description must correct identified flaws (like vagueness or ambiguity) and be **strictly based on evidence**, avoiding any speculation. The aim is to produce a description that makes the relationship genuinely useful and unambiguous for a knowledgeable audience.
+Your primary goal is to analyze a problematic relationship and its surrounding context to craft:
+1. **An accurate, coherent, and semantically meaningful textual description** of the connection between source and target entities
+2. **Well-curated relationship attributes** that provide valuable metadata and context
+
+Both improvements must correct identified flaws (like vagueness or ambiguity) and be **strictly based on evidence**, avoiding any speculation. The aim is to produce a relationship that is genuinely useful and unambiguous for a knowledgeable audience.
 
 ## Input Data
 
@@ -496,22 +543,36 @@ You will be provided with the following information:
         {json.dumps(selected_source_data, indent=2)}
         ```
 
-## Core Principles for Crafting the Relationship Description
+## Core Principles for Relationship Improvement
 
-Rely on your expert judgment, guided by the following principles:
+### Description Enhancement Principles
 
-1.  **Meaningful Clarification & Semantic Accuracy:** The description must make the relationship's purpose and the nature of the connection explicit and precise. It should accurately reflect how the entities interact or are associated.
-2.  **Truthfulness and Evidence-Based Refinement:** **This is paramount.** The improved description MUST be directly supported by evidence found in the `source_data`. **Do NOT invent details, make assumptions, or infer beyond what the provided context clearly indicates.**
-3.  **Clarity, Unambiguity, and Utility:** Ensure the improved description is easily understandable, its meaning is singular and well-defined, and it provides genuine insight into the connection. Avoid overly generic terms if evidence supports specificity.
+1.  **Meaningful Clarification & Semantic Accuracy**: The description must make the relationship's purpose and the nature of the connection explicit and precise.
+2.  **Truthfulness and Evidence-Based Refinement**: This is paramount. The improved description MUST be directly supported by evidence found in the `source_data`.
+3.  **Clarity, Unambiguity, and Utility**: Ensure the improved description is easily understandable, its meaning is singular and well-defined.
 
-## Guidelines for Formulating the Improved Description
+### Attribute Quality Principles
 
-1.  **Deep Analysis of `Relationship Quality Issue`:** Thoroughly understand the specific flaw(s) described in `Relationship Quality Issue` concerning the relationship's clarity or meaning. This is the problem your new description must solve.
-2.  **Comprehensive Contextual Understanding:** Before formulating the description, synthesize information from `relationship_to_improve`'s existing data and relevant `source_data`.
-3.  **Crafting the New Relationship `description`:**
-    * This is your sole output. It must be a **clear, concise, and evidence-based narrative** that explains *precisely how* the source entity connects to or interacts with the target entity.
-    * Clearly articulate the nature, purpose, and, if applicable, the direction or mechanism of the connection. For example, instead of "System A affects System B," a better description (if supported by evidence) might be "System A sends real-time transaction data to System B for fraud analysis."
-    * Ensure the new description directly addresses and resolves the issues raised in `Relationship Quality Issue`.
+1. **Relevance Check**: Remove attributes unrelated to the relationship's core meaning
+2. **Accuracy Verification**: Ensure attribute values are based on provided evidence
+3. **Completeness Enhancement**: Add valuable missing attributes based on source data
+4. **Consistency Assurance**: Maintain consistent attribute naming and value formats
+
+
+## Guidelines for Relationship Improvement
+
+Step 1: Deep Analysis of Quality Issues - Thoroughly understand the specific flaw(s) described in the `Relationship Quality Issue`. Identify what aspects of both description and attributes need improvement
+
+Step 2: Comprehensive Contextual Understanding - Synthesize information from the existing relationship data and relevant `source_data`. Extract verifiable facts that can support both description and attribute improvements
+
+Step 3: Crafting the Improved Description - Create a **clear, concise, and evidence-based narrative** that explains *precisely how* the source entity connects to or interacts with the target entity. Articulate the nature, purpose, and, if applicable, the direction or mechanism of the connection. Directly address and resolve the issues raised in `Relationship Quality Issue`
+
+Step 4: Optimizing Relationship Attributes - Apply the following strategies based on evidence from `source_data`. Attribute Processing Strategies:
+
+- **Retain**: Existing attributes that are evidence-supported and meaningful
+- **Correct**: Inaccurate attribute values based on source data
+- **Add**: Valuable new attributes extracted from source data
+- **Remove**: Attributes lacking evidence support or relevance
 
 
 ## Output Requirements
@@ -520,27 +581,24 @@ Return a single JSON object representing the improved relationship. The structur
 
 ```json
 {{
-"source_entity_name": "...", # use the entity name in the `relationship_to_improve`
-"target_entity_name": "...", # use the entity name in the `relationship_to_improve`
-"relationship_desc": "...",
-"attributes": {{}}
+    "source_entity_name": "...", # use the entity name in the `relationship_to_improve`
+    "target_entity_name": "...", # use the entity name in the `relationship_to_improve`
+    "relationship_desc": "...",
+    "attributes": {{
+        // Curated attributes based on evidence from source_data
+        // Include only attributes that add meaningful value and context
+        // If no valid attributes can be derived from evidence, use empty object
+    }}
 }}
 ```
-
-## Final Check: Before finalizing the description string, mentally review:
-
-* Is the fundamental meaning of the relationship, as conveyed by this description, now clear, precise, and unambiguous?
-* Does this description accurately capture the nature of the connection between the source and target entities, based *only* on the provided evidence?
-* Is this description truthful and directly verifiable from the input context?
-* Does this description directly and thoroughly address all problems outlined in `Relationship Quality Issue` regarding the relationship's clarity or meaning?
-* Is this description, on its own, genuinely useful and easily understood by a knowledgeable audience in database technologies without needing to guess the relationship's meaning?
-* Has any information been invented or inferred beyond what the evidence supports to create this description? (This should be avoided).
 
 Based on all the provided information and guidelines, exercising your expert judgment with a strict adherence to truthfulness, generate **only the new, improved relationship description string.**
 """
 
     try:
-        response = llm_client.generate(refine_relationship_quality_prompt)
+        token_count = calculate_tokens(refine_relationship_quality_prompt)
+        print(f"refine relationship quality prompt token count: {token_count}")
+        response = llm_client.generate(refine_relationship_quality_prompt, max_tokens=token_count + 1024)
         json_str = extract_json(response)
         json_str = "".join(
             char for char in json_str if ord(char) >= 32 or char in "\r\t"
@@ -555,7 +613,7 @@ def process_relationship_quality_issue(
     llm_client, relationship_model, row_key, row_issue
 ):
     print(f"start to process relationship({row_key})")
-    with SessionLocal() as session:
+    with session_factory() as session:
         try:
             for affected_id in row_issue["affected_ids"]:
                 relationship_quality_issue = {
@@ -603,6 +661,8 @@ def process_relationship_quality_issue(
                         # Update attributes if provided, preserving important existing fields
                         if "attributes" in updated_relationship:
                             new_attributes = updated_relationship["attributes"] or {}
+                            if isinstance(new_attributes, str):
+                                new_attributes = json.loads(new_attributes)
                             # Safely preserve existing important attributes
                             existing_attrs = existing_relationship.attributes or {}
                             # Preserve common important fields that should not be lost
@@ -659,48 +719,74 @@ def merge_relationship(llm_client, issue, entities, relationships, source_data_l
             break
         selected_source_data.append(source_data)
 
-    merge_relationship_prompt = f"""You are an expert assistant specializing in database technologies and knowledge graph curation, tasked with intelligently consolidating redundant relationship information that is primarily described through simple textual statements.
+    merge_relationship_prompt = f"""You are an expert assistant specializing in technologies and knowledge graph curation, tasked with intelligently consolidating redundant relationship information into a single, authoritative, and comprehensive relationship entry.
 
 ## Objective
 
-Your primary goal is to synthesize a **single, authoritative, and structured relationship** from a group of redundant descriptive entries. These entries connect the same source and target entities (identified by name) with what is presumed to be the same underlying semantic meaning. The merged relationship – which will include a common `source_entity_name`, a common `target_entity_name`, a synthesized `description` – should be more comprehensive, coherent, **meaningful, and well-defined** than any individual source entry. This task involves transforming multiple simple textual descriptions of a connection into a single, richer, structured representation, effectively reducing redundancy while maximizing clarity, utility, and **ease of understanding for a knowledgeable audience.** Prioritize information significance, contextual accuracy, and overall comprehensibility of the connection. **All inferences and syntheses must be strictly based on the provided evidence.**
+Your primary goal is to synthesize a **single, authoritative, and structured relationship** from multiple redundant entries that:
+1. **Eliminates redundancy** while preserving all valuable information
+2. **Enhances clarity and comprehensiveness** beyond any individual source entry
+3. **Maintains semantic accuracy** based strictly on provided evidence
+4. **Provides structured attributes** that add meaningful context
 
 ## Input Data
 
 You will be provided with the following information:
 
-1.  **Redundancy Issue (`issue`):** Describes why these relationship entries are considered redundant and need merging.
-    ```json
-    {json.dumps(issue, indent=2)}
-    ```
+### 1. Redundancy Issue (`issue`)
 
-2.  **Relationships to Merge (`relationships_to_merge`):** A list of relationship entries that require merging. **Each entry in this list is a simple object, identified by `source_entity_name` and `target_entity_name`, and containing a `description` string. These input entries LACK explicit `type`, `source_entity_id`, `target_entity_id`, or structured `properties` fields.** They are presumed to describe the same conceptual connection between the named entities.
-    ```json
-    {json.dumps(format_relationships, indent=2)}
-    ```
+Describes why these relationship entries are considered redundant and need merging.
+```json
+{json.dumps(issue, indent=2)}
+```
 
-3.  **Background Information:** Use this to gain a deeper understanding of the context. This is your **sole source of external information** beyond the `relationships_to_merge` themselves for inferring structural elements and enriching the merged relationship.
-    * **Relevant Knowledge (`source_data`):** Text snippets related to the named entities, their potential interactions, or relevant schemas/ontologies. Identify and extract *truly valuable details* from these chunks to help infer the relationship `type`, synthesize the `description`, and derive any relevant `properties`.
-        ```json
-        {json.dumps(selected_source_data, indent=2)}
-        ```
+### 2. Relationships to Merge (`relationships_to_merge`)
+
+A list of relationship entries that require merging. Each entry contains basic relationship information with potential variations in descriptions and attributes.
+```json
+{json.dumps(format_relationships, indent=2)}
+```
+
+### 3. Background Information (`source_data`)
+
+Text snippets related to the entities and their interactions. Use this as your **sole source of external information** for enriching the merged relationship.
+```json
+{json.dumps(selected_source_data, indent=2)}
+```
 
 ## Core Principles for Merging Relationships
 
-Rely on your expert judgment to achieve the following:
+### 1. Information Synthesis Strategy
 
-1.  **Meaningful Synthesis and Structuring from Limited Input:**
-    * Prioritize creating a **holistic, accurate, and high-quality structured representation of the semantic link**, even from simple descriptive inputs. The merged output should be more valuable than the sum of its parts.
-    * Preserve information from all source descriptions that is **genuinely significant, unique, or offers crucial context to the connection itself**.
-    * All aspects of the merged relationship MUST be directly supported by the provided `relationships_to_merge` descriptions and `source_data` – **never invent or assume facts not present. Be conservative with inferences if evidence is weak.**
+- **Comprehensive Integration**: Combine all unique and valuable information from source relationships
+- **Conflict Resolution**: When descriptions conflict, prioritize the most specific and evidence-supported version
+- **Evidence-Based Enhancement**: Use `source_data` to resolve ambiguities and add context
+- **Conservative Inference**: Only infer details that are clearly supported by provided evidence
 
-2.  **Clarity, Coherence, and Utility:**
-    * Ensure the synthesized `description` is **clear, its semantic meaning well-defined, logically structured, and easily digestible**.
-    * Strive for an optimal balance: comprehensive enough to be authoritative, yet concise.
+### 2. Quality Enhancement Principles
+
+- **Clarity Optimization**: Create descriptions that are more precise and understandable than individual sources
+- **Semantic Accuracy**: Ensure the merged relationship accurately represents the underlying connection
+- **Contextual Enrichment**: Add meaningful attributes that enhance relationship understanding
+- **Redundancy Elimination**: Remove duplicate or overlapping information while preserving unique insights
+
+### 3. Attribute Consolidation Strategy
+
+- **Union**: Combine non-conflicting attributes from all sources
+- **Resolution**: For conflicting attribute values, choose the most evidence-supported option
+- **Enhancement**: Add new attributes derived from `source_data` when clearly justified
+- **Standardization**: Ensure consistent naming and formatting across merged attributes
+
+### 4. Priority Rules for Conflicts
+
+1. **Evidence-supported** information takes precedence
+2. **More specific** details override generic ones
+3. **Recent or updated** information preferred when timestamps available
+4. **Consensus** across multiple sources increases reliability
 
 ## Output Requirements
 
-Return a single JSON object representing the merged relationship. This object will use the common `source_entity_name` and `target_entity_name` from the input.
+Return a single JSON object representing the merged relationship (surrounding by ```json and ```):
 
 The structure MUST be as follows:
 
@@ -709,23 +795,22 @@ The structure MUST be as follows:
   "source_entity_id": "...", // entity id from input
   "target_entity_id": "...", // entity id from input
   "relationship_desc": "...",      // Merged/synthesized relationship description
-  "attributes": {{}}               // Merged/synthesized relationship attributes
+  "attributes": {{
+    // Merged and optimized attributes from all source relationships
+    // Include only attributes that add meaningful value
+    // Resolve conflicts based on evidence and priority rules
+    // Add new attributes only when clearly supported by source_data
+  }}
 }}
 ```
-
-## Final Check: Before finalizing, review the merged relationship:
-
-- Is the inferred type semantically accurate and well-justified by the limited context? Is it appropriately general if specific evidence was lacking?
-- Is the synthesized description clear, comprehensive, and faithful to the combined evidence from input descriptions and source_data?
-- Does the entire merged relationship accurately represent the single best understanding of the underlying connection, given the input constraints?
-- Has redundancy from the input descriptions been effectively consolidated?
-- Are all aspects of the merged relationship directly supported by the provided relationships_to_merge and source_data, without invention?
 
 Based on all the provided information and guidelines, exercising your expert judgment to infer and synthesize within the given constraints, generate the merged relationship.
 """
 
     try:
-        response = llm_client.generate(merge_relationship_prompt, max_tokens=8192)
+        token_count = calculate_tokens(merge_relationship_prompt)
+        print(f"merge relationship prompt token count: {token_count}")
+        response = llm_client.generate(merge_relationship_prompt, max_tokens=token_count + 1024)
         json_str = extract_json(response)
         json_str = "".join(
             char for char in json_str if ord(char) >= 32 or char in "\r\t"
@@ -740,7 +825,7 @@ def process_redundancy_relationship_issue(
     llm_client, relationship_model, source_graph_mapping_model, row_key, row_issue
 ):
     print(f"start to merge relationships {row_key} for {row_issue}")
-    with SessionLocal() as session:
+    with session_factory() as session:
         try:
             relationships = get_relationship_by_ids(session, row_issue["affected_ids"])
             print(f"pending relationships({row_key})", relationships)

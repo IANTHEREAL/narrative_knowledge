@@ -5,6 +5,7 @@ Knowledge document upload API endpoints.
 import logging
 import json
 import uuid
+import hashlib
 from pathlib import Path
 from typing import List, Optional, Tuple
 from setting.db import SessionLocal, db_manager
@@ -45,6 +46,25 @@ def log_sql_query(query, query_name="SQL Query"):
         # Fallback to basic string representation if compile fails
         logger.info(f"{query_name} (basic): {str(query)}")
         logger.debug(f"SQL compile error: {e}")
+
+
+def _generate_temp_token_id(doc_link: str, external_database_uri: str = "") -> str:
+    """
+    Generate a deterministic temp_token_id based on doc_link and external_database_uri.
+
+    Args:
+        doc_link: The document link
+        external_database_uri: The external database URI (empty string for local)
+
+    Returns:
+        SHA256 hash of the combined string
+    """
+    # Combine doc_link and external_database_uri for hash generation
+    combined_string = f"{doc_link}||{external_database_uri}"
+
+    # Generate SHA256 hash
+    hash_object = hashlib.sha256(combined_string.encode("utf-8"))
+    return hash_object.hexdigest()
 
 
 # Configuration
@@ -172,31 +192,39 @@ def _save_uploaded_file_with_metadata(
         base_name = Path(filename).stem
         base_dir = UPLOAD_DIR / metadata.topic_name / base_name
 
-        # First check database for existing SourceData with same doc_link
-        # This maintains consistency with knowledge.py logic
-        # Use appropriate session factory based on database_uri
-        session_factory = db_manager.get_session_factory(metadata.database_uri)
-        with session_factory() as db:
-            existing_source = (
-                db.query(SourceData)
-                .filter(SourceData.link == metadata.doc_link)
+        # Generate temp_token_id based on doc_link and database_uri
+        external_db_uri = (
+            ""
+            if db_manager.is_local_mode(metadata.database_uri)
+            else metadata.database_uri
+        )
+        temp_token_id = _generate_temp_token_id(metadata.doc_link, external_db_uri)
+
+        # Check if GraphBuildStatus already exists for this temp_token_id
+        # This is sufficient since temp_token_id uniquely identifies doc_link + database_uri
+        with SessionLocal() as db:
+            existing_build_status = (
+                db.query(GraphBuildStatus)
+                .filter(
+                    GraphBuildStatus.temp_token_id == temp_token_id,
+                    GraphBuildStatus.topic_name == metadata.topic_name,
+                    GraphBuildStatus.external_database_uri == external_db_uri,
+                )
                 .first()
             )
 
-            if existing_source:
+            if existing_build_status:
                 # Check if directory and metadata already exist
                 if not base_dir.exists():
                     # Create versioned directory if base doesn't exist
                     base_dir = _get_versioned_directory(base_dir)
-                    _save_file_and_metadata(
-                        file, metadata, base_dir, existing_source.id
-                    )
+                    _save_file_and_metadata(file, metadata, base_dir, temp_token_id)
 
                 logger.info(
-                    f"Found existing SourceData with same doc_link: {metadata.doc_link}, "
-                    f"reusing source_id: {existing_source.id} as temp_token_id"
+                    f"Found existing document with temp_token_id: {temp_token_id}, "
+                    f"storage_directory: {existing_build_status.storage_directory}"
                 )
-                return base_dir, existing_source.id
+                return base_dir, temp_token_id
             # If no existing source in database, check file system for existing metadata
             # Check all possible versioned directories sequentially
             base_name = base_dir.name
@@ -230,7 +258,7 @@ def _save_uploaded_file_with_metadata(
                         ):
                             # Found matching metadata in file system, check for existing temp_token_id
                             existing_temp_token = existing_metadata.get("temp_token_id")
-                            if existing_temp_token:
+                            if existing_temp_token == temp_token_id:
                                 logger.info(
                                     f"Found existing metadata file with matching temp_token_id: {existing_temp_token} in directory: {check_dir}"
                                 )
@@ -242,9 +270,10 @@ def _save_uploaded_file_with_metadata(
 
             # New source - create directory and save
             base_dir = _get_versioned_directory(base_dir)
-            temp_token_id = str(uuid.uuid4())
             _save_file_and_metadata(file, metadata, base_dir, temp_token_id)
-            logger.info(f"File and metadata saved successfully: {base_dir}")
+            logger.info(
+                f"File and metadata saved successfully: {base_dir} with hash-based temp_token_id: {temp_token_id}"
+            )
             return base_dir, temp_token_id
 
     except HTTPException:
@@ -432,13 +461,16 @@ async def upload_documents(
 
             # check whether GraphBuildStatus exists for this temp_token_id, topic_name, database_uri
             is_existing = False  # Initialize the variable
+            external_db_uri = (
+                "" if db_manager.is_local_mode(database_uri) else database_uri or ""
+            )
             with SessionLocal() as db:
                 build_status = (
                     db.query(GraphBuildStatus)
                     .filter(
                         GraphBuildStatus.temp_token_id == temp_token_id,
                         GraphBuildStatus.topic_name == topic_name,
-                        GraphBuildStatus.external_database_uri == database_uri,
+                        GraphBuildStatus.external_database_uri == external_db_uri,
                     )
                     .first()
                 )
