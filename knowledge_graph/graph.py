@@ -56,15 +56,23 @@ class NarrativeKnowledgeGraphBuilder:
     def generate_analysis_blueprint(
         self,
         topic_name: str,
-        topic_docs: List[Dict],
+        cognitive_maps: List[Dict],
         force_regenerate: bool = False,
     ) -> AnalysisBlueprint:
         """
-        Stage 1: Generate analysis blueprint for a topic.
-        LLM acts as a strategist to create extraction strategy.
+        Stage 2: Generate Global Blueprint & Instructions for cross-document coordination.
+
+        This creates a comprehensive global blueprint that integrates insights from all
+        document cognitive maps to establish a God's-eye view analysis framework.
+
+        Key capabilities:
+        - Cross-document entity normalization
+        - Global pattern recognition
+        - Conflict resolution strategies
+        - Unified timeline integration
         """
-        if len(topic_docs) == 0:
-            raise ValueError(f"No documents found for topic: {topic_name}")
+        if len(cognitive_maps) == 0:
+            raise ValueError(f"No cognitive maps found for topic: {topic_name}")
 
         with self.SessionLocal() as db:
             # Check if blueprint already exists
@@ -76,103 +84,165 @@ class NarrativeKnowledgeGraphBuilder:
             )
 
             if existing_blueprint and not force_regenerate:
-                logger.info(f"Using existing analysis blueprint for {topic_name}")
+                logger.info(f"Using existing global blueprint for {topic_name}")
                 return existing_blueprint
 
-            # Prepare document summaries for analysis
-            doc_summaries = []
-            for doc in topic_docs:
-                doc_summary = (
-                    f"Document: {doc['source_name']}\n\n{doc['source_content']}"
-                )
-                doc_summaries.append(doc_summary)
+        # Enhanced Global Blueprint Generation Prompt
+        blueprint_prompt = f"""You are a master strategist analyzing cognitive maps from {len(cognitive_maps)} documents for "{topic_name}". 
 
-            combined_docs_summary = "\n".join(doc_summaries)
+Your task is to generate a GLOBAL BLUEPRINT that provides cross-document coordination and God's-eye view insights that no single document can provide.
 
-            # Stage 2 prompt: Analysis blueprint generation
-            blueprint_prompt = f"""You are an expert strategist analyzing a complete "context package" for {topic_name}.
-Your task is to generate a strategic analysis blueprint that will guide the detailed extraction of narrative knowledge from documents.
+<cognitive_maps_collection>
+{json.dumps(cognitive_maps, indent=2, ensure_ascii=False)}
+</cognitive_maps_collection>
 
-<documents_summary>
-{combined_docs_summary}
-</documents_summary>
+Generate a comprehensive global blueprint in JSON format with the following structure (surround by ```json and ```):
 
-Based on the document summaries, create a JSON analysis blueprint for detailed knowledge extraction:
-
-The blueprint should be in the following structure:
-
+```json
 {{
-    "suggested_entity_types": [
-        "List of entity types that seem most relevant for {topic_name}",
-        "Examples: Key Personnel, Requirements, Challenges, Core Projects, Business Goals, Technical Components, etc."
+"canonical_entities": {{
+    "normalized_name_1": {{
+        "aliases": ["variation1", "variation2", "variation3"],
+        "entity_type": "Person|Organization|System|Concept|Event",
+        "primary_source": "most_authoritative_document_name",
+        "description": "unified description combining insights from all documents"
+    }},
+    "normalized_name_2": {{
+        "aliases": ["Google", "谷歌", "Google Inc."],
+        "entity_type": "Organization", 
+        "primary_source": "official_press_release.pdf",
+        "description": "Global technology company, search engine provider"
+    }}
+}},
+"key_patterns": {{
+    "relationship_patterns": [
+        "Rich natural language descriptions of meaningful relationship patterns across documents",
+        "For example: 'Leadership transitions often trigger organizational restructuring within 3-6 months, affecting both technology adoption and team dynamics'",
+        "Another example: 'When companies face external pressure, they tend to accelerate digital transformation while simultaneously tightening internal controls'"
     ],
-    "key_narrative_themes": [
-        "List of narrative themes to focus on during extraction",
-        "Examples: Decision-making processes, Problem-solution relationships, Timeline of events, etc."
+    "temporal_patterns": [
+        "Natural language descriptions of time-based patterns",
+        "For example: 'Strategic decisions typically follow a cycle of problem identification, stakeholder consultation, pilot testing, and full implementation spanning 6-12 months'"
     ],
-    "processing_instructions": "Additional guidance for the extraction process specific to this topic's context",
+    "narrative_themes": [
+        "Cross-document narrative themes that provide rich context",
+        "For example: 'The tension between innovation speed and operational stability appears as a recurring challenge across multiple business units'"
+    ]
+}},
+"global_timeline": [
+    {{
+        "period": "2023-Q1",
+        "key_events": ["Event1 from doc_A", "Event2 from doc_B"],
+        "cross_document_connections": ["How events relate across documents"]
+    }},
+    {{
+        "period": "2023-Q2", 
+        "key_events": ["Major decision point", "System launch"],
+        "cross_document_connections": ["Impact chain across multiple documents"]
+    }}
+],
+"processing_instructions": {{
+    "conflict_handling": "Guidelines for resolving contradictory information between documents",
+    "quality_focus": "What aspects to prioritize for high-quality extraction",
+    "extraction_emphasis": "Areas that deserve special attention during detailed analysis",
+                "cross_document_insights": "How to leverage the global context for deeper understanding"
+    }}
 }}
+```
 
-Focus on:
-1. What types of entities appear most frequently and seem most important
-2. What narrative patterns or themes would capture the most valuable insights
-3. What business context or domain-specific considerations are relevant
-4. create processing_instructions to guide the extraction process to achieve the goal of the blueprint
+**CRITICAL REQUIREMENTS:**
 
-Now, please generate the analysis blueprint for {topic_name} in valid JSON format.
-"""
+1. **Canonical Entities**: Identify entities mentioned across multiple documents with different names (e.g., "Google" vs "谷歌" vs "Google Inc."). Create normalized names and track all variations.
 
-            try:
-                logger.info(f"Generating analysis blueprint for {topic_name}")
-                response = self.llm_client.generate(blueprint_prompt, max_tokens=4096)
-            except Exception as e:
-                logger.error(f"Error generating analysis blueprint: {e}")
-                raise RuntimeError(f"Error generating analysis blueprint: {e}")
+2. **Rich Relationship Patterns**: Instead of atomic patterns like "A-relation-B", describe meaningful, context-rich relationship patterns in natural language that capture the complexity and nuance of real-world interactions.
 
-            try:
-                blueprint_data = self._parse_llm_json_response(response, "object")
+3. **Global Timeline**: Integrate timeline events from all documents into a coherent chronological framework, identifying cross-document event sequences.
 
-                # Create and save blueprint
-                attributes = {"document_count": len(topic_docs)}
+4. **Flexible Processing Instructions**: Provide guidance on conflict handling, quality focus, extraction emphasis, and cross-document insights without rigid schemas.
 
-                processing_instructions_data = blueprint_data.get(
-                    "processing_instructions", ""
-                )
-                if isinstance(processing_instructions_data, list):
-                    processing_instructions = "\n".join(processing_instructions_data)
-                else:
-                    processing_instructions = str(processing_instructions_data)
+5. **Cross-Document Insights**: Focus on patterns, themes, and relationships that only become visible when analyzing all documents together.
 
+
+**Focus on providing insights that are IMPOSSIBLE to derive from any single document alone.**
+
+Generate the global blueprint for "{topic_name}"."""
+
+        try:
+            logger.info(
+                f"Generating global blueprint for {topic_name} with {len(cognitive_maps)} cognitive maps"
+            )
+            response = self.llm_client.generate(blueprint_prompt, max_tokens=8192)
+        except Exception as e:
+            logger.error(f"Error generating global blueprint: {e}")
+            raise RuntimeError(f"Error generating global blueprint: {e}")
+
+        try:
+            blueprint_data = self._parse_llm_json_response(response, "object")
+
+            # Extract and format the enhanced blueprint data
+            canonical_entities = blueprint_data.get("canonical_entities", {})
+            key_patterns = blueprint_data.get("key_patterns", {})
+            global_timeline = blueprint_data.get("global_timeline", [])
+            processing_instructions_data = blueprint_data.get(
+                "processing_instructions", {}
+            )
+
+            # Format processing instructions as a comprehensive text
+            processing_instructions_parts = []
+
+            if isinstance(processing_instructions_data, dict):
+                # Handle flexible processing instructions structure
+                for key, value in processing_instructions_data.items():
+                    if value:
+                        processing_instructions_parts.append(f"{key.upper()}:")
+                        processing_instructions_parts.append(value)
+                        processing_instructions_parts.append("")
+
+            elif isinstance(processing_instructions_data, str):
+                # Handle simple string format
+                processing_instructions_parts.append(processing_instructions_data)
+
+            processing_instructions = "\n".join(processing_instructions_parts)
+
+            # All blueprint data in the content JSON field
+            blueprint_items = {
+                "canonical_entities": canonical_entities,
+                "key_patterns": key_patterns,
+                "global_timeline": global_timeline,
+                "document_count": len(cognitive_maps),
+            }
+
+            with self.SessionLocal() as db:
                 blueprint = AnalysisBlueprint(
                     topic_name=topic_name,
-                    suggested_entity_types=blueprint_data.get(
-                        "suggested_entity_types", []
-                    ),
-                    key_narrative_themes=blueprint_data.get("key_narrative_themes", []),
+                    processing_items=blueprint_items,
                     processing_instructions=processing_instructions,
-                    attributes=attributes,
                 )
 
                 db.add(blueprint)
                 db.commit()
                 db.refresh(blueprint)
 
-                logger.info(
-                    f"Generated analysis blueprint for {topic_name}, entity types: {blueprint.suggested_entity_types}, narrative themes: {blueprint.key_narrative_themes}"
-                )
-                return blueprint
+            logger.info(
+                f"Generated global blueprint for {topic_name}:"
+                f"\n  - Processing instructions: {processing_instructions}"
+                f"\n  - Processing items: {blueprint.processing_items}"
+            )
 
-            except Exception as e:
-                logger.error(
-                    f"Error generating analysis blueprint: {e}. response: {response}"
-                )
-                raise RuntimeError(f"Error generating analysis blueprint: {e}")
+            return blueprint
+
+        except Exception as e:
+            logger.error(
+                f"Error generating global blueprint: {e}. response: {response}"
+            )
+            raise RuntimeError(f"Error generating global blueprint: {e}")
 
     def extract_triplets_from_document(
         self,
         topic_name: str,
         document: Dict,
         blueprint: AnalysisBlueprint,
+        document_cognitive_map: Dict = None,
     ) -> List[Dict]:
         """
         Stage 3: Extract enhanced narrative triplets from entire document.
@@ -205,7 +275,7 @@ Now, please generate the analysis blueprint for {topic_name} in valid JSON forma
         try:
             # 1. Extract semantic triplets from entire document
             semantic_triplets = self.extract_narrative_triplets_from_document_content(
-                topic_name, document_content, blueprint
+                topic_name, document_content, blueprint, document_cognitive_map
             )
 
             for triplet in semantic_triplets:
@@ -230,25 +300,52 @@ Now, please generate the analysis blueprint for {topic_name} in valid JSON forma
         topic_name: str,
         document_content: str,
         blueprint: AnalysisBlueprint,
+        document_cognitive_map: Dict = None,
     ) -> List[Dict]:
         """
         Extract enhanced narrative triplets from entire document content.
         Each triplet includes rich entity descriptions and temporal information indicating when facts occurred.
         """
 
-        # Enhanced extraction prompt
+        # Extract global context from blueprint
+        global_context = blueprint.processing_items
+        canonical_entities = global_context.get("canonical_entities", {})
+        key_patterns = global_context.get("key_patterns", {})
+        global_timeline = global_context.get("global_timeline", [])
+
+        # Extract document context from cognitive map (if available)
+        cognitive_context = ""
+        if document_cognitive_map:
+            doc_summary = document_cognitive_map.get("summary", "")
+            doc_key_entities = document_cognitive_map.get("key_entities", [])
+            doc_themes = document_cognitive_map.get("theme_keywords", [])
+            doc_timeline = document_cognitive_map.get("important_timeline", [])
+
+            cognitive_context = f"""**Document Cognitive Map:**
+- Summary: {doc_summary}
+- Key Entities: {json.dumps(doc_key_entities, ensure_ascii=False)}
+- Themes: {json.dumps(doc_themes, ensure_ascii=False)}
+- Timeline: {json.dumps(doc_timeline, ensure_ascii=False)}
+"""
+
+        # Enhanced extraction prompt with full context
         extraction_prompt = f"""You are an expert knowledge extractor working on {topic_name} documents.
 
-Use this analysis blueprint to guide extraction:
+**Global Blueprint (Cross-Document Context):**
+- Canonical Entities: {json.dumps(canonical_entities, indent=2, ensure_ascii=False)}
+- Key Patterns: {json.dumps(key_patterns, indent=2, ensure_ascii=False)}  
+- Global Timeline: {json.dumps(global_timeline, indent=2, ensure_ascii=False)}
 
-**Entity Types to Focus On:**
-{json.dumps(blueprint.suggested_entity_types, indent=2)}
-
-**Narrative Themes:**
-{json.dumps(blueprint.key_narrative_themes, indent=2)}
-
-**Instructions:**
+**Processing Instructions:**
 {blueprint.processing_instructions}
+
+**Document Cognitive Map:**
+{cognitive_context}
+
+**IMPORTANT EXTRACTION GUIDELINES:**
+1. Use canonical entity names from global blueprint when available
+2. Align extracted facts with global patterns and timeline
+3. Focus on relationships that provide business insights
 
 Extract enhanced narrative triplets from this document. Focus on:
 1. Finding WHY, HOW, WHEN details for existing relationships

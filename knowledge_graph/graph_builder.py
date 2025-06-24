@@ -3,8 +3,8 @@ import logging
 from typing import Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from knowledge_graph.models import DocumentSummary
-from knowledge_graph.summarizer import DocumentSummarizer
+from knowledge_graph.models import DocumentSummary, AnalysisBlueprint
+from knowledge_graph.congnitive_map import DocumentCognitiveMapGenerator
 from knowledge_graph.graph import NarrativeKnowledgeGraphBuilder
 from llm.factory import LLMInterface
 from setting.db import SessionLocal
@@ -36,7 +36,9 @@ class KnowledgeGraphBuilder:
         self.llm_client = llm_client
         self.embedding_func = embedding_func
         self.session_factory = session_factory or SessionLocal
-        self.summarizer = DocumentSummarizer(llm_client, session_factory, worker_count)
+        self.cm_generator = DocumentCognitiveMapGenerator(
+            llm_client, session_factory, worker_count
+        )
         self.graph_builder = NarrativeKnowledgeGraphBuilder(
             llm_client, embedding_func, session_factory
         )
@@ -46,7 +48,7 @@ class KnowledgeGraphBuilder:
         self,
         topic_name: str,
         documents: List[Dict],
-        force_regenerate_summaries: bool = False,
+        force_regenerate_cognitive_maps: bool = False,
         force_regenerate_blueprint: bool = False,
     ) -> Dict:
         """
@@ -55,7 +57,7 @@ class KnowledgeGraphBuilder:
         Args:
             topic_name: Topic to focus analysis on
             documents: List of document dicts with knowledge blocks
-            force_regenerate_summaries: Whether to regenerate existing summaries
+            force_regenerate_cognitive_maps: Whether to regenerate existing cognitive maps
             force_regenerate_blueprint: Whether to regenerate existing blueprint
 
         Returns:
@@ -65,19 +67,20 @@ class KnowledgeGraphBuilder:
             f"Building narrative knowledge graph for topic: {topic_name}: {len(documents)} documents"
         )
 
-        # Stage 0: Generate document summaries
-        logger.info("=== Stage 0: Generating document summaries ===")
-        summaries = self.generate_document_summaries(
-            topic_name, documents, force_regenerate_summaries
+        # Pre-processing Stage 1: Generate document cognitive maps
+        logger.info("=== Stage 0: Generating document cognitive maps ===")
+        cognitive_maps = self.generate_document_cognitive_maps(
+            topic_name, documents, force_regenerate_cognitive_maps
         )
 
+        # Pre-processing Stage 2: Generate analysis blueprint
         blueprint = self.graph_builder.generate_analysis_blueprint(
             topic_name,
-            summaries,
+            cognitive_maps,
             force_regenerate_blueprint,
         )
 
-        # Phase 1: Parallel triplet extraction
+        # Extract narrative triplets
         logger.info(
             f"Processing {len(documents)} documents in parallel using {self.worker_count} workers"
         )
@@ -86,18 +89,20 @@ class KnowledgeGraphBuilder:
             """Worker function to extract triplets and immediately convert to graph for a single document."""
             index, doc = doc_with_index
             try:
-                # Extract triplets from document
-                triplets = self.graph_builder.extract_triplets_from_document(
-                    topic_name, doc, blueprint
-                )
+                # Get document cognitive map for enhanced extraction
+                doc_cognitive_map = None
+                for cognitive_map in cognitive_maps:
+                    if cognitive_map.get("source_id") == doc["source_id"]:
+                        doc_cognitive_map = cognitive_map
+                        break
 
-                # Count different types of triplets
-                doc_semantic = sum(
-                    1 for t in triplets if t.get("category") == "narrative"
+                # Extract triplets with cognitive map if available
+                triplets = self.graph_builder.extract_triplets_from_document(
+                    topic_name, doc, blueprint, doc_cognitive_map
                 )
 
                 logger.info(
-                    f"Document {doc['source_name']}: extracted {doc_semantic} narrative triplets"
+                    f"Document {doc['source_name']}: extracted {len(triplets)} triplets"
                 )
 
                 # Immediately convert triplets to graph and save to database
@@ -115,7 +120,6 @@ class KnowledgeGraphBuilder:
                     index,
                     doc,
                     len(triplets),
-                    doc_semantic,
                     entities_created,
                     relationships_created,
                     None,
@@ -123,7 +127,7 @@ class KnowledgeGraphBuilder:
             except Exception as e:
                 error_msg = f"Failed to process document {doc['source_name']}: {e}"
                 logger.error(error_msg, exc_info=True)
-                return index, doc, 0, 0, 0, 0, error_msg
+                return index, doc, 0, 0, 0, error_msg
 
         # Process documents in parallel with immediate database saves
         processing_results = [None] * len(documents)  # Pre-allocate to maintain order
@@ -132,7 +136,6 @@ class KnowledgeGraphBuilder:
         indexed_documents = list(enumerate(documents))
 
         all_triplets = 0
-        semantic_triplets_count = 0
         entities_created = 0
         relationships_created = 0
 
@@ -154,7 +157,6 @@ class KnowledgeGraphBuilder:
                         index,
                         doc_result,
                         triplets_count,
-                        doc_semantic,
                         doc_entities,
                         doc_relationships,
                         error,
@@ -169,7 +171,6 @@ class KnowledgeGraphBuilder:
                         processing_results[index] = doc_result
                         # Accumulate counts
                         all_triplets += triplets_count
-                        semantic_triplets_count += doc_semantic
                         entities_created += doc_entities
                         relationships_created += doc_relationships
 
@@ -206,17 +207,13 @@ class KnowledgeGraphBuilder:
             "blueprint_id": blueprint.id,
             "documents_processed": successful_documents,
             "documents_failed": len(processing_errors),
-            "summaries_generated": len(summaries),
+            "cognitive_maps_generated": len(cognitive_maps),
             "triplets_extracted": all_triplets,
-            "semantic_triplets": semantic_triplets_count,
             "entities_created": entities_created,
             "relationships_created": relationships_created,
-            "narrative_entities_created": entities_created,
-            "narrative_relationships_created": relationships_created,
-            "analysis_blueprint": {
-                "suggested_entity_types": blueprint.suggested_entity_types,
-                "key_narrative_themes": blueprint.key_narrative_themes,
+            "global_blueprint": {
                 "processing_instructions": blueprint.processing_instructions,
+                "processing_items": blueprint.processing_items,
             },
         }
 
@@ -234,36 +231,69 @@ class KnowledgeGraphBuilder:
 
         return result
 
-    def generate_document_summaries(
+    def generate_document_cognitive_maps(
         self,
         topic_name: str,
         documents: List[Dict],
         force_regenerate: bool = False,
     ) -> List[Dict]:
         """
-        Generate topic-focused summaries for all documents.
-        Returns summaries in document-like format for blueprint generation.
+        Generate topic-focused cognitive maps for all documents.
+        Returns cognitive maps in document-like format for blueprint generation.
 
         Args:
-            topic_name: Topic to focus summaries on
+            topic_name: Topic to focus cognitive maps on
             documents: List of document dicts
-            force_regenerate: Whether to regenerate existing summaries
+            force_regenerate: Whether to regenerate existing cognitive maps
 
         Returns:
-            List of document-like summary objects
+            List of document-like cognitive map objects
         """
-        return self.summarizer.batch_summarize_documents(
+        return self.cm_generator.batch_generate_cognitive_maps(
             topic_name, documents, force_regenerate
         )
 
-    def get_topic_summaries(self, topic_name: str) -> List[DocumentSummary]:
+    def get_topic_cognitive_maps(self, topic_name: str) -> List[DocumentSummary]:
         """
-        Get all existing summaries for a topic.
+        Get all existing cognitive maps for a topic.
 
         Args:
             topic_name: Topic name to filter by
 
         Returns:
-            List of DocumentSummary objects
+            List of DocumentSummary objects with cognitive maps
         """
-        return self.summarizer.get_summaries_for_topic(topic_name)
+        return self.cm_generator.get_cognitive_maps_for_topic(topic_name)
+
+    def get_global_blueprint_details(self, topic_name: str) -> Dict:
+        """
+        Get detailed information about the global blueprint for a topic.
+
+        Args:
+            topic_name: Topic name to get blueprint for
+
+        Returns:
+            Dict containing detailed blueprint information
+        """
+        with self.session_factory() as db:
+            blueprint = (
+                db.query(AnalysisBlueprint)
+                .filter(AnalysisBlueprint.topic_name == topic_name)
+                .order_by(AnalysisBlueprint.created_at.desc())
+                .first()
+            )
+
+            if not blueprint:
+                return {"error": f"No blueprint found for topic: {topic_name}"}
+
+            attributes = blueprint.attributes or {}
+
+            return {
+                "topic_name": blueprint.topic_name,
+                "blueprint_id": blueprint.id,
+                "created_at": (
+                    blueprint.created_at.isoformat() if blueprint.created_at else None
+                ),
+                "processing_instructions": blueprint.processing_instructions,
+                "processing_items": blueprint.processing_items,
+            }

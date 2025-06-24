@@ -88,12 +88,7 @@ class NarrativeGraphQuery:
             "topic_name": topic_name,
             "database_uri": "local" if self.is_local else "external",
             "blueprint": {
-                "suggested_entity_types": (
-                    blueprint.suggested_entity_types if blueprint else []
-                ),
-                "key_narrative_themes": (
-                    blueprint.key_narrative_themes if blueprint else []
-                ),
+                "processing_items": blueprint.processing_items if blueprint else {},
                 "processing_instructions": (
                     blueprint.processing_instructions if blueprint else ""
                 ),
