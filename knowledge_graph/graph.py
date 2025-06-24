@@ -196,7 +196,13 @@ Generate the global blueprint for "{topic_name}"."""
                 for key, value in processing_instructions_data.items():
                     if value:
                         processing_instructions_parts.append(f"{key.upper()}:")
-                        processing_instructions_parts.append(value)
+                        # Handle both string and list values
+                        if isinstance(value, list):
+                            # Convert list to formatted string with bullet points
+                            for item in value:
+                                processing_instructions_parts.append(f"  - {item}")
+                        else:
+                            processing_instructions_parts.append(str(value))
                         processing_instructions_parts.append("")
 
             elif isinstance(processing_instructions_data, str):
@@ -484,7 +490,10 @@ Now, please generate the narrative triplets for {topic_name} in valid JSON forma
         )
 
         # Step 1: Query existing knowledge related to this document
-        existing_knowledge = query_existing_knowledge(document["source_id"], topic_name)
+        with self.SessionLocal() as db:
+            existing_knowledge = query_existing_knowledge(
+                db, document["source_id"], topic_name
+            )
 
         # Step 2: Build context for reasoning
         reasoning_context = self._build_reasoning_context(

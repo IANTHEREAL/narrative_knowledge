@@ -1,6 +1,7 @@
 import logging
 import pandas as pd
 from typing import List, Dict, Optional
+from sqlalchemy.orm import Session
 from sqlalchemy import text, func
 from sqlalchemy.orm import joinedload
 from sqlalchemy.orm import aliased
@@ -107,115 +108,6 @@ class NarrativeGraphQuery:
             ),
         }
 
-    def query_existing_knowledge(self, source_id: str, topic_name: str) -> Dict:
-        """
-        Query existing entities and relationships related to the document and topic with optimized performance.
-
-        Uses efficient joins to avoid N+1 queries and fetch all related data in minimal database roundtrips.
-
-        Args:
-            source_id: Source document ID
-            topic_name: Topic name to filter by
-
-        Returns:
-            Dict with existing_entities, existing_relationships, total counts
-        """
-        with self.session_factory() as db:
-            # Get all graph elements mapped to this source in one query
-            source_mappings = (
-                db.query(SourceGraphMapping)
-                .filter(
-                    SourceGraphMapping.source_id == source_id,
-                    SourceGraphMapping.attributes["topic_name"] == topic_name,
-                )
-                .all()
-            )
-
-            entity_ids = [
-                mapping.graph_element_id
-                for mapping in source_mappings
-                if mapping.graph_element_type == "entity"
-            ]
-            relationship_ids = [
-                mapping.graph_element_id
-                for mapping in source_mappings
-                if mapping.graph_element_type == "relationship"
-            ]
-
-            # Query entities efficiently
-            existing_entities = []
-            entity_map = {}  # id -> entity_data mapping
-            if entity_ids:
-                entities = db.query(Entity).filter(Entity.id.in_(entity_ids)).all()
-                for entity in entities:
-                    entity_data = {
-                        "id": entity.id,
-                        "name": entity.name,
-                        "description": entity.description,
-                        "attributes": entity.attributes or {},
-                    }
-                    existing_entities.append(entity_data)
-                    entity_map[entity.id] = entity_data
-
-            # Query relationships with entity details in one efficient query using joins
-            existing_relationships = []
-            if relationship_ids:
-                # Use aliases for clarity
-                source_entity = aliased(Entity)
-                target_entity = aliased(Entity)
-
-                # Single query to get relationships with all entity details
-                relationship_query = (
-                    db.query(
-                        Relationship,
-                        source_entity.id.label("source_id"),
-                        source_entity.name.label("source_name"),
-                        source_entity.description.label("source_description"),
-                        target_entity.id.label("target_id"),
-                        target_entity.name.label("target_name"),
-                        target_entity.description.label("target_description"),
-                    )
-                    .join(
-                        source_entity, Relationship.source_entity_id == source_entity.id
-                    )
-                    .join(
-                        target_entity, Relationship.target_entity_id == target_entity.id
-                    )
-                    .filter(Relationship.id.in_(relationship_ids))
-                    .all()
-                )
-
-                for row in relationship_query:
-                    rel = row.Relationship
-                    rel_data = {
-                        "id": rel.id,
-                        "source_entity": {
-                            "id": row.source_id,
-                            "name": row.source_name,
-                            "description": row.source_description,
-                        },
-                        "target_entity": {
-                            "id": row.target_id,
-                            "name": row.target_name,
-                            "description": row.target_description,
-                        },
-                        "relationship_desc": rel.relationship_desc,
-                        "attributes": rel.attributes or {},
-                    }
-                    existing_relationships.append(rel_data)
-
-            logger.info(
-                f"Queried existing knowledge for source {source_id}: "
-                f"{len(existing_entities)} entities, {len(existing_relationships)} relationships"
-            )
-
-            return {
-                "existing_entities": list(entity_map.values()),
-                "existing_relationships": existing_relationships,
-                "total_entities": len(existing_entities),
-                "total_relationships": len(existing_relationships),
-            }
-
 
 # Convenience functions
 def query_topic_graph(topic_name: str, database_uri: Optional[str] = None) -> Dict:
@@ -224,22 +116,108 @@ def query_topic_graph(topic_name: str, database_uri: Optional[str] = None) -> Di
     return query.export_topic_graph_to_json(topic_name)
 
 
-def query_existing_knowledge(
-    source_id: str, topic_name: str, database_uri: Optional[str] = None
-) -> Dict:
+def query_existing_knowledge(db: Session, source_id: str, topic_name: str) -> Dict:
     """
-    Quick function to query existing knowledge for a specific source and topic.
+    Query existing entities and relationships related to the document and topic with optimized performance.
+
+    Uses efficient joins to avoid N+1 queries and fetch all related data in minimal database roundtrips.
 
     Args:
         source_id: Source document ID
         topic_name: Topic name to filter by
-        database_uri: Database URI to query from. None means local database.
 
     Returns:
-        Dict with existing_entities, existing_relationships, and entity_map
+        Dict with existing_entities, existing_relationships, total counts
     """
-    query = NarrativeGraphQuery(database_uri)
-    return query.query_existing_knowledge(source_id, topic_name)
+    source_mappings = (
+        db.query(SourceGraphMapping)
+        .filter(
+            SourceGraphMapping.source_id == source_id,
+            SourceGraphMapping.attributes["topic_name"] == topic_name,
+        )
+        .all()
+    )
+
+    entity_ids = [
+        mapping.graph_element_id
+        for mapping in source_mappings
+        if mapping.graph_element_type == "entity"
+    ]
+    relationship_ids = [
+        mapping.graph_element_id
+        for mapping in source_mappings
+        if mapping.graph_element_type == "relationship"
+    ]
+
+    # Query entities efficiently
+    existing_entities = []
+    entity_map = {}  # id -> entity_data mapping
+    if entity_ids:
+        entities = db.query(Entity).filter(Entity.id.in_(entity_ids)).all()
+        for entity in entities:
+            entity_data = {
+                "id": entity.id,
+                "name": entity.name,
+                "description": entity.description,
+                "attributes": entity.attributes or {},
+            }
+            existing_entities.append(entity_data)
+            entity_map[entity.id] = entity_data
+
+    # Query relationships with entity details in one efficient query using joins
+    existing_relationships = []
+    if relationship_ids:
+        # Use aliases for clarity
+        source_entity = aliased(Entity)
+        target_entity = aliased(Entity)
+
+        # Single query to get relationships with all entity details
+        relationship_query = (
+            db.query(
+                Relationship,
+                source_entity.id.label("source_id"),
+                source_entity.name.label("source_name"),
+                source_entity.description.label("source_description"),
+                target_entity.id.label("target_id"),
+                target_entity.name.label("target_name"),
+                target_entity.description.label("target_description"),
+            )
+            .join(source_entity, Relationship.source_entity_id == source_entity.id)
+            .join(target_entity, Relationship.target_entity_id == target_entity.id)
+            .filter(Relationship.id.in_(relationship_ids))
+            .all()
+        )
+
+        for row in relationship_query:
+            rel = row.Relationship
+            rel_data = {
+                "id": rel.id,
+                "source_entity": {
+                    "id": row.source_id,
+                    "name": row.source_name,
+                    "description": row.source_description,
+                },
+                "target_entity": {
+                    "id": row.target_id,
+                    "name": row.target_name,
+                    "description": row.target_description,
+                },
+                "relationship_desc": rel.relationship_desc,
+                "attributes": rel.attributes or {},
+            }
+            existing_relationships.append(rel_data)
+
+    logger.info(
+        f"Queried existing knowledge for source {source_id}: "
+        f"{len(existing_entities)} entities, {len(existing_relationships)} relationships"
+    )
+
+    return {
+        "existing_entities": list(entity_map.values()),
+        "existing_relationships": existing_relationships,
+        "total_entities": len(existing_entities),
+        "total_relationships": len(existing_relationships),
+    }
 
 
 def search_relationships_by_vector_similarity(
