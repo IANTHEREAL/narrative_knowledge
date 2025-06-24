@@ -286,8 +286,6 @@ class KnowledgeGraphBuilder:
             if not blueprint:
                 return {"error": f"No blueprint found for topic: {topic_name}"}
 
-            attributes = blueprint.attributes or {}
-
             return {
                 "topic_name": blueprint.topic_name,
                 "blueprint_id": blueprint.id,
@@ -297,3 +295,217 @@ class KnowledgeGraphBuilder:
                 "processing_instructions": blueprint.processing_instructions,
                 "processing_items": blueprint.processing_items,
             }
+
+    def enhance_knowledge_graph(
+        self,
+        topic_name: str,
+        documents: List[Dict],
+    ) -> Dict:
+        """
+        Build knowledge graph with optional reasoning enhancement for discovering implicit knowledge.
+
+        This method first queries existing blueprint and cognitive maps from the database, followed by detective-style reasoning enhancement.
+
+        Args:
+            topic_name: Topic to focus analysis on
+            documents: List of document dicts with knowledge blocks
+
+        Returns:
+            Dict with construction results, statistics, and reasoning insights
+        """
+        logger.info(
+            f"Building enhanced knowledge graph with reasoning for topic: {topic_name}: {len(documents)} documents"
+        )
+
+        # Stage 1: Query existing blueprint from database
+        logger.info("=== Stage 1: Querying existing blueprint ===")
+        blueprint = None
+        with self.session_factory() as db:
+            blueprint = (
+                db.query(AnalysisBlueprint)
+                .filter(AnalysisBlueprint.topic_name == topic_name)
+                .order_by(AnalysisBlueprint.created_at.desc())
+                .first()
+            )
+
+            if blueprint:
+                logger.info(
+                    f"Found existing blueprint for {topic_name}, created at {blueprint.created_at}"
+                )
+
+        # Stage 2: Query existing cognitive maps from database
+        logger.info("=== Stage 2: Querying existing cognitive maps ===")
+        cognitive_maps = []
+        document_ids = [doc["source_id"] for doc in documents]
+
+        if document_ids:
+            with self.session_factory() as db:
+                # Query all cognitive maps for the topic and documents in one query
+                cognitive_map_summaries = (
+                    db.query(DocumentSummary)
+                    .filter(
+                        DocumentSummary.document_id.in_(document_ids),
+                        DocumentSummary.topic_name == topic_name,
+                    )
+                    .all()
+                )
+
+                # Convert DocumentSummary objects to cognitive map format
+                for summary in cognitive_map_summaries:
+                    try:
+                        business_context = (
+                            json.loads(summary.business_context)
+                            if summary.business_context
+                            else {}
+                        )
+                    except (json.JSONDecodeError, TypeError):
+                        business_context = {}
+
+                    cognitive_map = {
+                        "source_id": summary.document_id,
+                        "source_name": (
+                            summary.source_data.name
+                            if summary.source_data
+                            else f"doc_{summary.document_id}"
+                        ),
+                        "summary": summary.summary_content or "",
+                        "key_entities": summary.key_entities or [],
+                        "theme_keywords": summary.main_themes or [],
+                        "important_timeline": business_context.get(
+                            "important_timeline", []
+                        ),
+                        "structural_patterns": business_context.get(
+                            "structural_patterns", "unknown"
+                        ),
+                    }
+                    cognitive_maps.append(cognitive_map)
+
+                logger.info(
+                    f"Found {len(cognitive_maps)} existing cognitive maps in database"
+                )
+
+        # Stage 3: Reasoning enhancement for each document
+        logger.info("=== Stage 3: Reasoning Enhancement ===")
+
+        total_reasoning_entities = 0
+        total_reasoning_relationships = 0
+        reasoning_summaries = []
+
+        def enhance_document_with_reasoning(doc_with_index):
+            """Worker function to perform reasoning enhancement on a single document."""
+            index, doc = doc_with_index
+            try:
+                # Get document cognitive map
+                doc_cognitive_map = None
+                for cognitive_map in cognitive_maps:
+                    if cognitive_map.get("source_id") == doc["source_id"]:
+                        doc_cognitive_map = cognitive_map
+                        break
+
+                # Perform reasoning enhancement
+                reasoning_results = self.graph_builder.enhance_knowledge_graph(
+                    topic_name, doc, blueprint, doc_cognitive_map
+                )
+
+                # Convert reasoning results to graph database
+                entities_enhanced, relationships_enhanced = (
+                    self.graph_builder.convert_reasoning_results_to_graph(
+                        reasoning_results, doc["source_id"]
+                    )
+                )
+
+                logger.info(
+                    f"Document {doc['source_name']} reasoning enhancement: "
+                    f"{entities_enhanced} entities, {relationships_enhanced} relationships"
+                )
+
+                return (
+                    index,
+                    doc,
+                    entities_enhanced,
+                    relationships_enhanced,
+                    None,
+                )
+
+            except Exception as e:
+                error_msg = f"Failed reasoning enhancement for document {doc['source_name']}: {e}"
+                logger.error(error_msg, exc_info=True)
+                return index, doc, 0, 0, error_msg
+
+        # Process reasoning enhancement in parallel
+        reasoning_results = [None] * len(documents)
+        reasoning_errors = []
+
+        indexed_documents = list(enumerate(documents))
+
+        with ThreadPoolExecutor(max_workers=self.worker_count) as executor:
+            # Submit all reasoning enhancement tasks
+            future_to_doc = {
+                executor.submit(
+                    enhance_document_with_reasoning, doc_with_index
+                ): doc_with_index[1]
+                for doc_with_index in indexed_documents
+            }
+
+            completed_reasoning = 0
+            for future in as_completed(future_to_doc):
+                doc = future_to_doc[future]
+                completed_reasoning += 1
+                try:
+                    (
+                        index,
+                        doc_result,
+                        entities_enhanced,
+                        relationships_enhanced,
+                        error,
+                    ) = future.result()
+
+                    if error:
+                        reasoning_errors.append(error)
+                        logger.warning(
+                            f"Reasoning enhancement failed ({completed_reasoning}/{len(documents)}): {doc['source_name']}"
+                        )
+                    else:
+                        reasoning_results[index] = doc_result
+                        total_reasoning_entities += entities_enhanced
+                        total_reasoning_relationships += relationships_enhanced
+
+                        logger.info(
+                            f"Reasoning enhancement completed ({completed_reasoning}/{len(documents)}): {doc['source_name']}"
+                        )
+
+                except Exception as e:
+                    error_msg = f"Unexpected error in reasoning enhancement for {doc['source_name']}: {e}"
+                    reasoning_errors.append(error_msg)
+                    logger.error(error_msg, exc_info=True)
+
+        # Compile enhanced results
+        successful_reasoning = len([r for r in reasoning_results if r is not None])
+
+        if reasoning_errors:
+            logger.warning(
+                f"Reasoning enhancement completed with {len(reasoning_errors)} errors:"
+            )
+            for error in reasoning_errors:
+                logger.warning(f"  - {error}")
+
+        enhanced_results = {
+            "reasoning_enhancement_enabled": True,
+            "reasoning_entities_created": total_reasoning_entities,
+            "reasoning_relationships_created": total_reasoning_relationships,
+            "documents_reasoning_enhanced": successful_reasoning,
+            "documents_reasoning_failed": len(reasoning_errors),
+        }
+
+        logger.info(
+            f"Enhanced knowledge graph construction completed! "
+            f"Reasoning: +{total_reasoning_entities} entities, +{total_reasoning_relationships} relationships. "
+        )
+
+        if reasoning_errors:
+            logger.warning(
+                f"Reasoning enhancement had {len(reasoning_errors)} failures. "
+                f"Enhanced {successful_reasoning}/{len(documents)} documents successfully."
+            )
+
+        return enhanced_results

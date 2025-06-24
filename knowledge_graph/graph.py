@@ -13,6 +13,7 @@ from knowledge_graph.models import (
     AnalysisBlueprint,
     SourceGraphMapping,
 )
+from knowledge_graph.query import query_existing_knowledge
 from utils.json_utils import robust_json_parse
 from setting.db import SessionLocal
 from llm.factory import LLMInterface
@@ -346,10 +347,12 @@ Generate the global blueprint for "{topic_name}"."""
 1. Use canonical entity names from global blueprint when available
 2. Align extracted facts with global patterns and timeline
 3. Focus on relationships that provide business insights
+4. **MANDATORY FACT SUPPORT:** Every entity attribute and relationship MUST be directly supported by explicit text from the document
 
 Extract enhanced narrative triplets from this document. Focus on:
 1. Finding WHY, HOW, WHEN details for existing relationships
 2. Discovering new supporting relationships that add depth
+3. **Only extract facts that have clear textual evidence**
 
 **CRITICAL: TIME EXTRACTION REQUIREMENTS**
 For each triplet, you MUST identify when the fact occurred or was true. Use this systematic approach:
@@ -383,22 +386,26 @@ Each triplet should include:
 {document_content}
 </document_content>
 
-Return a JSON array of enhanced triplets:
+**ENTITY vs RELATIONSHIP SEPARATION:**
+- Entity description = What IS this entity? (intrinsic properties, characteristics, context about the entity itself)
+- Relationship description = How entities interact? (all WHO, WHEN, WHERE, HOW, WHY context)
+
+Return a JSON array of enhanced triplets (surround with ```json and ```):
 
 ```json
 [
     {{
         "subject": {{
             "name": "Entity name",
-            "description": "Detailed contextual description of the entity",
+            "description": "ENTITY-FOCUSED: Detailed description of what this entity IS (intrinsic properties, characteristics, context about the entity itself). EXCLUDE relationships with other entities.",
             "attributes": {{
                 "entity_type": "one of the suggested types"
             }}
         }},
-        "predicate": "Rich narrative relationship with WHO, WHAT, WHEN, WHERE, WHY context",
+        "predicate": "RELATIONSHIP-FOCUSED: Rich narrative describing HOW entities interact (who, what, when, where, why, how context)",
         "object": {{
             "name": "Entity name", 
-            "description": "Detailed contextual description of the entity",
+            "description": "ENTITY-FOCUSED: Detailed description of what this entity IS (intrinsic properties, characteristics, context about the entity itself). EXCLUDE relationships with other entities.",
             "attributes": {{
                 "entity_type": "one of the suggested types"
             }}
@@ -412,8 +419,15 @@ Return a JSON array of enhanced triplets:
 ]
 ```
 
+**CRITICAL FACT-BASED REQUIREMENTS:**
+1. Every entity description must be based on explicit text about that entity
+2. Every relationship must be clearly evidenced by specific text spans
+3. Do NOT infer or assume information not directly stated in the text
+4. **Rich Entity Descriptions**: Detailed descriptions of what entities ARE, not how they relate to others
+5. **Rich Relationship Descriptions**: Detailed descriptions of how entities interact, not just relationship types
+
 Focus on extracting meaningful relationships that reveal business insights WITH their temporal context.
-Only extract triplets if they contain valuable knowledge.
+Only extract triplets if they contain valuable knowledge AND have clear textual support.
 
 Now, please generate the narrative triplets for {topic_name} in valid JSON format.
 """
@@ -439,6 +453,222 @@ Now, please generate the narrative triplets for {topic_name} in valid JSON forma
             raise RuntimeError(
                 f"Error processing narrative triplets from document content: {e}"
             )
+
+    def enhance_knowledge_graph(
+        self,
+        topic_name: str,
+        document: Dict,
+        blueprint: AnalysisBlueprint = None,
+        document_cognitive_map: Dict = None,
+    ) -> Dict[str, List[Dict]]:
+        """
+        Enhance knowledge graph through reasoning and inference.
+
+        Acts like a detective to find hidden connections, complete missing knowledge gaps,
+        and enrich existing entities with additional insights.
+
+        Args:
+            topic_name: Topic to focus the enhancement on
+            document: Document dict with source_id, source_name, source_content, etc.
+            blueprint: Optional analysis blueprint for global context
+            document_cognitive_map: Optional cognitive map for document context
+
+        Returns:
+            Dict containing:
+            - enhanced_relationships: List of new/enhanced relationship triplets
+            - enhanced_entities: List of new/enhanced entity objects
+            - reasoning_summary: Summary of the reasoning process
+        """
+        logger.info(
+            f"Starting knowledge graph reasoning enhancement for document: {document['source_name']}"
+        )
+
+        # Step 1: Query existing knowledge related to this document
+        existing_knowledge = query_existing_knowledge(document["source_id"], topic_name)
+
+        # Step 2: Build context for reasoning
+        reasoning_context = self._build_reasoning_context(
+            topic_name, document, blueprint, document_cognitive_map, existing_knowledge
+        )
+
+        # Step 3: Perform reasoning to discover implicit relationships and entities
+        reasoning_results = self._perform_knowledge_reasoning(
+            topic_name, document, reasoning_context
+        )
+
+        logger.info(
+            f"Knowledge reasoning completed for {document['source_name']}: "
+            f"{len(reasoning_results.get('enhanced_relationships', []))} enhanced relationships, "
+        )
+
+        return reasoning_results
+
+    def _build_reasoning_context(
+        self,
+        topic_name: str,
+        document: Dict,
+        blueprint: AnalysisBlueprint = None,
+        document_cognitive_map: Dict = None,
+        existing_knowledge: Dict = None,
+    ) -> str:
+        """
+        Build comprehensive context for knowledge reasoning.
+        """
+        context_parts = []
+
+        # Document information
+        context_parts.append(f"**Document Information:**")
+        context_parts.append(f"- Name: {document['source_name']}")
+        context_parts.append(f"- Content: {document['source_content']}")
+        context_parts.append(f"- Attributes: {document.get('source_attributes', {})}")
+        context_parts.append("")
+
+        # Global blueprint context (if available)
+        if blueprint:
+            context_parts.append("**Global Blueprint Context:**")
+            context_parts.append(
+                f"- Processing Instructions: {blueprint.processing_instructions}"
+            )
+            context_parts.append(
+                f"- Processing Items: {json.dumps(blueprint.processing_items, indent=2, ensure_ascii=False)}"
+            )
+            context_parts.append("")
+
+        # Document cognitive map context (if available)
+        if document_cognitive_map:
+            context_parts.append("**Document Cognitive Map:**")
+            context_parts.append(
+                f"{json.dumps(document_cognitive_map, indent=2, ensure_ascii=False)}"
+            )
+            context_parts.append("")
+
+        # Existing knowledge context
+        if existing_knowledge:
+            context_parts.append("**Existing Knowledge in Graph:**")
+            context_parts.append(
+                f"- Total Entities: {existing_knowledge['total_entities']}"
+            )
+            context_parts.append(
+                f"- Total Relationships: {existing_knowledge['total_relationships']}"
+            )
+
+            if existing_knowledge["existing_entities"]:
+                context_parts.append("- Entities:")
+                for entity in existing_knowledge["existing_entities"]:
+                    context_parts.append(
+                        f"  * {entity['name']}: {entity['description']}"
+                    )
+
+            if existing_knowledge["existing_relationships"]:
+                context_parts.append("- Relationships:")
+                for rel in existing_knowledge["existing_relationships"]:
+                    context_parts.append(
+                        f"  * {rel['source_entity']['name']} -> {rel['relationship_desc']} -> {rel['target_entity']['name']}"
+                    )
+            context_parts.append("")
+
+        return "\n".join(context_parts)
+
+    def _perform_knowledge_reasoning(
+        self, topic_name: str, document: Dict, reasoning_context: str
+    ) -> Dict:
+        """
+        Use LLM to perform knowledge reasoning and discover implicit relationships.
+        """
+        reasoning_prompt = f"""You are an expert knowledge detective working on "{topic_name}" analysis.
+
+Your primary mission is to **complete missing information** and **enhance entity descriptions** through **logical reasoning and inference**. 
+Crucially, all of your reasoning must be **strictly grounded in the explicit facts** presented in the text. Your goal is not to invent, but to **synthesize and connect scattered information** to create a more complete and valuable knowledge graph.
+
+{reasoning_context}
+
+**FACT-BASED REASONING PRINCIPLES:**
+
+1.  **Entity-Only Descriptions:** Enhance entity descriptions with intrinsic properties only
+2.  **Evidence-Based:** Every enhancement must be supported by explicit text
+3.  **No Speculation:** Do not infer missing information or assume details not present
+4.  **Clear Separation:** Entity properties in descriptions, interactions in relationships
+
+**ANALYTICAL TASKS:**
+
+1.  **Enhance Entity Descriptions**: Add ONLY explicitly stated properties about entities. Focus on what the entity IS (definition, characteristics, features) based on direct text evidence.
+2.  **Discover Explicit Relationships**: Find relationships that are clearly stated or directly evidenced in specific text spans. Each relationship must cite supporting text.
+3.  **Connect Clear Facts**: Link entities only when connections are explicitly stated or logically unavoidable from direct evidence.
+
+**OUTPUT FORMAT:**
+
+Return a JSON object with your reasoning discoveries in the following format (surround with ```json and ```):
+
+```json
+{{
+    "enhanced_relationships": [
+        {{
+            "subject": {{
+                "name": "Entity name",
+                "description": "ENTITY-FOCUSED: What IS this entity? (intrinsic properties only, no relationships)", 
+                "attributes": {{
+                    "entity_type": "Organization|Person|System|Concept|Event|Process", 
+                }},
+                "requires_description_update": true/false,
+                "update_justification": "Explanation of why the description should be updated (required if requires_description_update is true)"
+            }},
+            "predicate": "RELATIONSHIP-FOCUSED: How entities interact (all WHO, WHEN, WHERE, HOW context)",
+            "object": {{
+                "name": "Entity name",
+                "description": "ENTITY-FOCUSED: What IS this entity? (intrinsic properties only, no relationships)",
+                "attributes": {{
+                    "entity_type": "Person|Organization|System|Concept|Event|Process",
+                }},
+                "requires_description_update": true/false,
+                "update_justification": "Explanation of why the description should be updated (required if requires_description_update is true)"
+            }},
+            "relationship_attributes": {{
+                "fact_time": "when this relationship/fact occurred or was true",
+                "time_expression": "original time expression from text if any",
+                "sentiment": "positive|negative|neutral",
+                "confidence": "high|medium|low",
+                "justification": "Clear explanation of reasoning process with reference to supporting evidence in the text",
+            }}
+        }}
+    ]
+}}
+```
+
+**CRITICAL REQUIREMENTS:**
+
+1. **Evidence-Based Reasoning**: Every enhancement must reference supporting evidence from the text.
+2. **Temporal Accuracy**: Capture temporal context precisely based on text evidence.
+3. **Rich Entity Descriptions**: Provide detailed descriptions of what entities ARE, not how they relate to others.
+4. **Rich Relationship Descriptions**: Provide detailed descriptions of how entities interact, not just the relationship type.
+5. **Confidence Scoring**: Include confidence levels with clear justification.
+6. **Entity Enhancement Tracking**:
+    - For **existing entities**: Set `requires_description_update` to `true` only when adding intrinsic properties about the entity itself.
+    - For **new entities**: Always set `requires_description_update` to `false`.
+
+Begin your detective work and discover the hidden knowledge!
+"""
+
+        try:
+            logger.info(f"Performing knowledge reasoning for {document['source_name']}")
+            response = self.llm_client.generate(reasoning_prompt, max_tokens=16384)
+        except Exception as e:
+            logger.error(f"Error performing knowledge reasoning: {e}")
+            raise RuntimeError(f"Error performing knowledge reasoning: {e}")
+
+        try:
+            reasoning_results = self._parse_llm_json_response(response, "object")
+
+            # Add metadata to discoveries
+            for rel in reasoning_results.get("enhanced_relationships", []):
+                rel.update({"topic_name": topic_name})
+
+            return reasoning_results
+
+        except Exception as e:
+            logger.error(
+                f"Error parsing knowledge reasoning results: {e}, response: {response}"
+            )
+            raise RuntimeError(f"Error parsing knowledge reasoning results: {e}")
 
     def _simple_retry(self, operation_func, max_retries=3):
         """Simple retry for database operations with connection timeouts."""
@@ -659,3 +889,224 @@ Now, please generate the narrative triplets for {topic_name} in valid JSON forma
                 attributes={"topic_name": topic_name},
             )
             db.add(mapping)
+
+    def convert_reasoning_results_to_graph(
+        self, reasoning_results: Dict, source_id: str
+    ) -> Tuple[int, int]:
+        """
+        Convert reasoning enhancement results to Entity/Relationship objects in the database.
+
+        Args:
+            reasoning_results: Results from enhance_knowledge_graph_with_reasoning
+            source_id: Source document ID for mapping
+
+        Returns:
+            (entities_created_or_updated, relationships_created)
+        """
+        entities_created = 0
+        relationships_created = 0
+        entity_id_cache = {}
+
+        logger.info(
+            f"Converting reasoning results to graph: "
+            f"{len(reasoning_results.get('enhanced_relationships', []))} relationships"
+        )
+
+        for rel_data in reasoning_results.get("enhanced_relationships", []):
+
+            def process_enhanced_relationship():
+                nonlocal relationships_created
+                nonlocal entities_created
+
+                with self.SessionLocal() as db:
+                    try:
+                        subject_name = rel_data["subject"]["name"]
+                        object_name = rel_data["object"]["name"]
+                        topic_name = rel_data["topic_name"]
+
+                        # Get or create subject entity
+                        if subject_name in entity_id_cache:
+                            subject_entity_id = entity_id_cache[subject_name]
+                        else:
+                            subject_entity = (
+                                db.query(Entity)
+                                .filter(
+                                    Entity.name == subject_name,
+                                    Entity.attributes["topic_name"] == topic_name,
+                                )
+                                .first()
+                            )
+
+                            if not subject_entity:
+                                # Create subject entity from relationship
+                                subject_entity = Entity(
+                                    name=subject_name,
+                                    description=rel_data["subject"]["description"],
+                                    description_vec=self.embedding_func(
+                                        rel_data["subject"]["description"]
+                                    ),
+                                    attributes={
+                                        **rel_data["subject"]["attributes"],
+                                        "topic_name": topic_name,
+                                    },
+                                )
+                                db.add(subject_entity)
+                                db.flush()
+                                entities_created += 1
+                            elif rel_data["subject"]["requires_description_update"]:
+                                # Enhance existing entity description and attributes
+                                subject_entity.description = rel_data["subject"][
+                                    "description"
+                                ]
+                                subject_entity.description_vec = self.embedding_func(
+                                    subject_entity.description
+                                )
+
+                                enhanced_attributes = {
+                                    **subject_entity.attributes,
+                                    **rel_data["subject"]["attributes"],
+                                }
+                                subject_entity.attributes = enhanced_attributes
+                                logger.info(
+                                    f"Enhanced existing entity: {subject_name}. New description: {subject_entity.description}, justification: {rel_data['subject']['update_justification']}"
+                                )
+
+                            subject_entity_id = subject_entity.id
+                            entity_id_cache[subject_name] = subject_entity_id
+
+                            # Create source mapping
+                            self._create_source_mapping(
+                                db, source_id, subject_entity_id, "entity", topic_name
+                            )
+
+                        # Get or create object entity
+                        if object_name in entity_id_cache:
+                            object_entity_id = entity_id_cache[object_name]
+                        else:
+                            object_entity = (
+                                db.query(Entity)
+                                .filter(
+                                    Entity.name == object_name,
+                                    Entity.attributes["topic_name"] == topic_name,
+                                )
+                                .first()
+                            )
+
+                            if not object_entity:
+                                # Create object entity from relationship
+                                object_entity = Entity(
+                                    name=object_name,
+                                    description=rel_data["object"]["description"],
+                                    description_vec=self.embedding_func(
+                                        rel_data["object"]["description"]
+                                    ),
+                                    attributes={
+                                        **rel_data["object"]["attributes"],
+                                        "topic_name": topic_name,
+                                    },
+                                )
+                                db.add(object_entity)
+                                db.flush()
+                                entities_created += 1
+                            elif rel_data["object"]["requires_description_update"]:
+                                object_entity.description = rel_data["object"][
+                                    "description"
+                                ]
+                                object_entity.description_vec = self.embedding_func(
+                                    object_entity.description
+                                )
+
+                                enhanced_attributes = {
+                                    **object_entity.attributes,
+                                    **rel_data["object"]["attributes"],
+                                }
+                                object_entity.attributes = enhanced_attributes
+                                logger.info(
+                                    f"Enhanced existing entity: {object_name}. New description: {object_entity.description}, justification: {rel_data['object']['update_justification']}"
+                                )
+
+                            object_entity_id = object_entity.id
+                            entity_id_cache[object_name] = object_entity_id
+
+                            # Create source mapping
+                            self._create_source_mapping(
+                                db, source_id, object_entity_id, "entity", topic_name
+                            )
+
+                        # Create enhanced relationship
+                        relationship_desc = rel_data["predicate"]
+
+                        # Check if relationship already exists
+                        existing_rel = (
+                            db.query(Relationship)
+                            .filter(
+                                Relationship.source_entity_id == subject_entity_id,
+                                Relationship.target_entity_id == object_entity_id,
+                                Relationship.relationship_desc == relationship_desc,
+                            )
+                            .first()
+                        )
+
+                        if not existing_rel:
+                            # Create new reasoning-enhanced relationship
+                            rel_attributes = {
+                                **rel_data["relationship_attributes"],
+                                "topic_name": topic_name,
+                            }
+
+                            new_relationship = Relationship(
+                                source_entity_id=subject_entity_id,
+                                target_entity_id=object_entity_id,
+                                relationship_desc=relationship_desc,
+                                relationship_desc_vec=self.embedding_func(
+                                    relationship_desc
+                                ),
+                                attributes=rel_attributes,
+                            )
+                            db.add(new_relationship)
+                            db.flush()
+                            relationships_created += 1
+
+                            # Create source mapping
+                            self._create_source_mapping(
+                                db,
+                                source_id,
+                                new_relationship.id,
+                                "relationship",
+                                topic_name,
+                            )
+
+                            logger.info(
+                                f"Created reasoning-enhanced relationship: {subject_name} -> {relationship_desc} -> {object_name}"
+                            )
+                        else:
+                            # Update existing relationship with reasoning insights
+                            enhanced_attributes = {
+                                **existing_rel.attributes,
+                                **rel_data["relationship_attributes"],
+                            }
+                            existing_rel.attributes = enhanced_attributes
+
+                            logger.info(
+                                f"Enhanced existing relationship: {subject_name} -> {relationship_desc} -> {object_name}"
+                            )
+
+                        db.commit()
+
+                    except Exception as e:
+                        db.rollback()
+                        raise e
+
+            try:
+                self._simple_retry(process_enhanced_relationship)
+            except Exception as e:
+                logger.error(f"Error processing enhanced relationship: {e}")
+                raise RuntimeError(f"Error processing enhanced relationship: {e}")
+
+        logger.info(
+            f"Reasoning results conversion completed: "
+            f"{entities_created} entities created/enhanced, "
+            f"{relationships_created} relationships created"
+        )
+
+        return entities_created, relationships_created
