@@ -258,16 +258,26 @@ class Relationship(Base):
 
 
 class AnalysisBlueprint(Base):
-    """Analysis blueprint for each client - stores extraction strategy"""
+    """
+    Flexible analysis blueprint - stores all blueprint data in JSON format.
+
+    Simple design that can accommodate any future cognitive architecture changes
+    without requiring schema modifications.
+    """
 
     __tablename__ = "analysis_blueprints"
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     topic_name = Column(String(255), nullable=False)
-    suggested_entity_types = Column(JSON, nullable=True)
-    key_narrative_themes = Column(JSON, nullable=True)
-    processing_instructions = Column(Text, nullable=True)
-    attributes = Column(JSON, nullable=True)
+
+    # All blueprint data stored as JSON for maximum flexibility
+    processing_items = Column(
+        JSON, nullable=False
+    )  # canonical_entities, key_patterns, global_timeline, etc.
+    processing_instructions = Column(
+        Text, nullable=True
+    )  # Human-readable processing guidance
+
     created_at = Column(DateTime, default=func.current_timestamp())
     updated_at = Column(
         DateTime, default=func.current_timestamp(), onupdate=func.current_timestamp()
@@ -276,7 +286,7 @@ class AnalysisBlueprint(Base):
     __table_args__ = (Index("idx_analysis_blueprints_topic_name", "topic_name"),)
 
     def __repr__(self):
-        return f"<AnalysisBlueprint(client={self.topic_name}, created_at={self.created_at})>"
+        return f"<AnalysisBlueprint(topic={self.topic_name}, created_at={self.created_at})>"
 
 
 class DocumentSummary(Base):

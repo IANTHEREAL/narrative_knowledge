@@ -6,8 +6,9 @@ from typing import Tuple
 import concurrent.futures
 
 from knowledge_graph.query import search_relationships_by_vector_similarity
+from setting.db import db_manager
 from opt.helper import GRAPH_OPTIMIZATION_ACTION_SYSTEM_PROMPT_WO_MR
-from opt.evaluator import evaluate_issue
+from opt.evaluator import batch_evaluate_issues
 from opt.helper import extract_issues
 from llm.factory import LLMInterface
 from knowledge_graph.models import Entity, Relationship, SourceGraphMapping
@@ -37,6 +38,8 @@ critic_clients = {
     # "sonnet-3.7-critic": sonnet_critic_client,
     #"deepseek-R1-critic": deepseek_critic_client,
 }
+
+session_factory = db_manager.get_session_factory(os.getenv("GRAPH_DATABASE_URI"))
 
 
 def get_issue_key(issue: dict) -> Tuple[str, tuple]:
@@ -160,7 +163,7 @@ def improve_graph(query: str, tmp_test_data_file: str = "test_data.pkl"):
         .any()
         .any()
     ):
-        issue_df = evaluate_issue(critic_clients, issue_df)
+        issue_df = batch_evaluate_issues(critic_clients, issue_df)
 
     issue_df.to_pickle(tmp_test_data_file)
     print(f"Identified {issue_df[issue_df['confidence'] >= 0.9].shape[0]} valid issues")
@@ -247,6 +250,7 @@ def improve_graph(query: str, tmp_test_data_file: str = "test_data.pkl"):
                 futures[
                     executor.submit(
                         process_entity_quality_issue,
+                        session_factory,
                         qwen3_critic_client,
                         Entity,
                         Relationship,
@@ -377,6 +381,7 @@ def improve_graph(query: str, tmp_test_data_file: str = "test_data.pkl"):
                 futures[
                     executor.submit(
                         process_redundancy_entity_issue,
+                        session_factory,
                         qwen3_critic_client,
                         Entity,
                         Relationship,
@@ -464,6 +469,7 @@ def improve_graph(query: str, tmp_test_data_file: str = "test_data.pkl"):
                 futures[
                     executor.submit(
                         process_relationship_quality_issue,
+                        session_factory,
                         qwen3_critic_client,
                         Relationship,
                         row_issue["row_index"],
@@ -598,6 +604,7 @@ def improve_graph(query: str, tmp_test_data_file: str = "test_data.pkl"):
                 futures[
                     executor.submit(
                         process_redundancy_relationship_issue,
+                        session_factory,
                         qwen3_critic_client,
                         Relationship,
                         SourceGraphMapping,

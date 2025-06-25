@@ -25,7 +25,18 @@ class OllamaProvider(BaseLLMProvider):
             full_prompt = f"{system_prompt}\n{prompt}"
         else:
             full_prompt = prompt
-        data = {"model": self.model, "prompt": full_prompt, "stream": False, **kwargs}
+
+        options = {}
+        if "max_tokens" in kwargs:
+            options["num_ctx"] = kwargs.pop("max_tokens")
+        options.update(kwargs)
+
+        data = {
+            "model": self.model,
+            "prompt": full_prompt,
+            "stream": False,
+            "options": options,
+        }
         response = self._retry_with_exponential_backoff(
             requests.post, f"{self.ollama_base_url}/api/generate", json=data
         )
@@ -50,8 +61,19 @@ class OllamaProvider(BaseLLMProvider):
             full_prompt = f"{system_prompt}\n{prompt}"
         else:
             full_prompt = prompt
+
+        options = {}
+        if "max_tokens" in kwargs:
+            options["num_ctx"] = kwargs.pop("max_tokens")
+        options.update(kwargs)
+
         try:
-            data = {"model": self.model, "prompt": full_prompt, **kwargs}
+            data = {
+                "model": self.model,
+                "prompt": full_prompt,
+                "options": options,
+                "stream": True,
+            }
 
             response = requests.post(
                 f"{self.ollama_base_url}/api/generate", json=data, stream=True
