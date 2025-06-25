@@ -44,6 +44,30 @@ class NarrativeKnowledgeGraphBuilder:
         self.llm_client = llm_client
         self.embedding_func = embedding_func
         self.SessionLocal = session_factory or SessionLocal
+        self._quality_standard = self._load_quality_standard()
+
+    def _load_quality_standard(self) -> str:
+        """
+        Load the unified knowledge graph quality standard from markdown file.
+
+        Returns:
+            Quality standard content as string, or empty string if file not found.
+        """
+        try:
+            quality_standard_path = (
+                Path(__file__).parent.parent / "knowledge_graph_quality_standard.md"
+            )
+            if quality_standard_path.exists():
+                with open(quality_standard_path, "r", encoding="utf-8") as f:
+                    return f.read()
+            else:
+                logger.warning(
+                    f"Quality standard file not found at {quality_standard_path}"
+                )
+                return ""
+        except Exception as e:
+            logger.error(f"Failed to load quality standard file: {e}")
+            return ""
 
     def _parse_llm_json_response(
         self, response: str, expected_format: str = "object"
@@ -349,52 +373,19 @@ Generate the global blueprint for "{topic_name}"."""
 **Document Cognitive Map:**
 {cognitive_context}
 
-**IMPORTANT EXTRACTION GUIDELINES:**
+<KNOWLEDGE GRAPH QUALITY STANDARDS>
+{self._quality_standard}
+</KNOWLEDGE GRAPH QUALITY STANDARDS>
+
+**EXTRACTION FOCUS:**
 1. Use canonical entity names from global blueprint when available
 2. Align extracted facts with global patterns and timeline
-3. Focus on relationships that provide business insights
-4. **MANDATORY FACT SUPPORT:** Every entity attribute and relationship MUST be directly supported by explicit text from the document
-
-Extract enhanced narrative triplets from this document. Focus on:
-1. Finding WHY, HOW, WHEN details for existing relationships
-2. Discovering new supporting relationships that add depth
-3. **Only extract facts that have clear textual evidence**
-
-**CRITICAL: TIME EXTRACTION REQUIREMENTS**
-For each triplet, you MUST identify when the fact occurred or was true. Use this systematic approach:
-
-**Time Identification Strategy:**
-1. **Explicit Time Markers**: Look for direct time references
-   - Absolute dates: "2024年", "January 2023", "Q1 2024"
-   - Relative times: "last year", "next month", "recently"
-   - Versions/iterations: "v2.0", "latest version", "updated system"
-
-2. **Contextual Time Inference**: When no explicit time exists
-   - Document publication/creation date as baseline
-   - Sequential indicators: "after X", "before Y", "following the meeting"
-   - Project phases: "during development", "post-launch", "initial phase"
-   - Business cycles: "this quarter", "fiscal year", "annual review"
-
-3. **Time Expression Standards**:
-   - Precise dates: "2024-03-15"
-   - Year/month: "2024-03" or "March 2024"
-   - Quarters: "Q1 2024"
-   - Relative: "late 2023", "early 2024"
-   - Event-based: "post-project-launch", "pre-system-migration"
-
-Each triplet should include:
-- Rich entity descriptions and attributes
-- Detailed narrative relationships
-- Proper categorization
-- **MANDATORY temporal information**
+3. Focus on relationships that provide business insights and deep context
+4. Extract triplets that reveal WHY, HOW, WHEN details for meaningful connections
 
 <document_content>
 {document_content}
 </document_content>
-
-**ENTITY vs RELATIONSHIP SEPARATION:**
-- Entity description = What IS this entity? (intrinsic properties, characteristics, context about the entity itself)
-- Relationship description = How entities interact? (all WHO, WHEN, WHERE, HOW, WHY context)
 
 Return a JSON array of enhanced triplets (surround with ```json and ```):
 
@@ -403,37 +394,31 @@ Return a JSON array of enhanced triplets (surround with ```json and ```):
     {{
         "subject": {{
             "name": "Entity name",
-            "description": "ENTITY-FOCUSED: Detailed description of what this entity IS (intrinsic properties, characteristics, context about the entity itself). EXCLUDE relationships with other entities.",
+            "description": "What IS this entity? Focus on intrinsic properties and characteristics.",
             "attributes": {{
-                "entity_type": "one of the suggested types"
+                "entity_type": "Person|Organization|System|Concept|Event|Process"
             }}
         }},
-        "predicate": "RELATIONSHIP-FOCUSED: Rich narrative describing HOW entities interact (who, what, when, where, why, how context)",
+        "predicate": "Rich narrative describing HOW entities interact with full context",
         "object": {{
             "name": "Entity name", 
-            "description": "ENTITY-FOCUSED: Detailed description of what this entity IS (intrinsic properties, characteristics, context about the entity itself). EXCLUDE relationships with other entities.",
+            "description": "What IS this entity? Focus on intrinsic properties and characteristics.",
             "attributes": {{
-                "entity_type": "one of the suggested types"
+                "entity_type": "Person|Organization|System|Concept|Event|Process"
             }}
         }},
         "relationship_attributes": {{
-            "fact_time": "when this relationship/fact occurred or was true",
-            "time_expression": "original time expression from text if any",
-            "sentiment": "positive|negative|neutral"
+            "fact_time": "ISO 8601 UTC timestamp for single point events (e.g., '2025-06-25T11:30:00Z') OR",
+            "fact_time_range": {{"start": "ISO timestamp", "end": "ISO timestamp or null"}} for time ranges,
+            "time_expression": "original time expression from source text for evidence traceability",
+            "sentiment": "positive|negative|neutral",
+            "confidence": "high|medium|low based on evidence strength"
         }}
     }}
 ]
 ```
 
-**CRITICAL FACT-BASED REQUIREMENTS:**
-1. Every entity description must be based on explicit text about that entity
-2. Every relationship must be clearly evidenced by specific text spans
-3. Do NOT infer or assume information not directly stated in the text
-4. **Rich Entity Descriptions**: Detailed descriptions of what entities ARE, not how they relate to others
-5. **Rich Relationship Descriptions**: Detailed descriptions of how entities interact, not just relationship types
-
-Focus on extracting meaningful relationships that reveal business insights WITH their temporal context.
-Only extract triplets if they contain valuable knowledge AND have clear textual support.
+**EXTRACTION FOCUS**: Only extract triplets that contain valuable knowledge with clear textual support.
 
 Now, please generate the narrative triplets for {topic_name} in valid JSON format.
 """
@@ -591,18 +576,15 @@ Crucially, all of your reasoning must be **strictly grounded in the explicit fac
 
 {reasoning_context}
 
-**FACT-BASED REASONING PRINCIPLES:**
+<KNOWLEDGE GRAPH QUALITY STANDARDS>
+{self._quality_standard}
+</KNOWLEDGE GRAPH QUALITY STANDARDS>
 
-1.  **Entity-Only Descriptions:** Enhance entity descriptions with intrinsic properties only
-2.  **Evidence-Based:** Every enhancement must be supported by explicit text
-3.  **No Speculation:** Do not infer missing information or assume details not present
-4.  **Clear Separation:** Entity properties in descriptions, interactions in relationships
+**REASONING TASKS:**
 
-**ANALYTICAL TASKS:**
-
-1.  **Enhance Entity Descriptions**: Add ONLY explicitly stated properties about entities. Focus on what the entity IS (definition, characteristics, features) based on direct text evidence.
-2.  **Discover Explicit Relationships**: Find relationships that are clearly stated or directly evidenced in specific text spans. Each relationship must cite supporting text.
-3.  **Connect Clear Facts**: Link entities only when connections are explicitly stated or logically unavoidable from direct evidence.
+1.  **Enhance Entity Descriptions**: Add explicitly stated properties about entities based on direct text evidence
+2.  **Discover Explicit Relationships**: Find relationships clearly evidenced in specific text spans
+3.  **Connect Clear Facts**: Link entities when connections are explicitly stated in the text
 
 **OUTPUT FORMAT:**
 
@@ -614,26 +596,27 @@ Return a JSON object with your reasoning discoveries in the following format (su
         {{
             "subject": {{
                 "name": "Entity name",
-                "description": "ENTITY-FOCUSED: What IS this entity? (intrinsic properties only, no relationships)", 
+                "description": "What IS this entity? (intrinsic properties only)",
                 "attributes": {{
-                    "entity_type": "Organization|Person|System|Concept|Event|Process", 
+                    "entity_type": "Organization|Person|System|Concept|Event|Process"
                 }},
                 "requires_description_update": true/false,
-                "update_justification": "Explanation of why the description should be updated (required if requires_description_update is true)"
+                "update_justification": "Explanation if description needs updating"
             }},
-            "predicate": "RELATIONSHIP-FOCUSED: How entities interact (all WHO, WHEN, WHERE, HOW context)",
+            "predicate": "How entities interact with full context",
             "object": {{
                 "name": "Entity name",
-                "description": "ENTITY-FOCUSED: What IS this entity? (intrinsic properties only, no relationships)",
+                "description": "What IS this entity? (intrinsic properties only)",
                 "attributes": {{
-                    "entity_type": "Person|Organization|System|Concept|Event|Process",
+                    "entity_type": "Person|Organization|System|Concept|Event|Process"
                 }},
                 "requires_description_update": true/false,
-                "update_justification": "Explanation of why the description should be updated (required if requires_description_update is true)"
+                "update_justification": "Explanation if description needs updating"
             }},
             "relationship_attributes": {{
-                "fact_time": "when this relationship/fact occurred or was true",
-                "time_expression": "original time expression from text if any",
+                "fact_time": "ISO 8601 UTC timestamp for single point events (e.g., '2025-06-25T11:30:00Z') OR",
+                "fact_time_range": {{"start": "ISO timestamp", "end": "ISO timestamp or null"}} for time ranges,
+                "time_expression": "original time expression from source text for evidence traceability",
                 "sentiment": "positive|negative|neutral",
                 "confidence": "high|medium|low",
                 "justification": "Clear explanation of reasoning process with reference to supporting evidence in the text",
@@ -643,16 +626,9 @@ Return a JSON object with your reasoning discoveries in the following format (su
 }}
 ```
 
-**CRITICAL REQUIREMENTS:**
-
-1. **Evidence-Based Reasoning**: Every enhancement must reference supporting evidence from the text.
-2. **Temporal Accuracy**: Capture temporal context precisely based on text evidence.
-3. **Rich Entity Descriptions**: Provide detailed descriptions of what entities ARE, not how they relate to others.
-4. **Rich Relationship Descriptions**: Provide detailed descriptions of how entities interact, not just the relationship type.
-5. **Confidence Scoring**: Include confidence levels with clear justification.
-6. **Entity Enhancement Tracking**:
-    - For **existing entities**: Set `requires_description_update` to `true` only when adding intrinsic properties about the entity itself.
-    - For **new entities**: Always set `requires_description_update` to `false`.
+**IMPLEMENTATION NOTES:**
+- **Entity Enhancement Tracking**: Set `requires_description_update` to `true` only for existing entities when adding intrinsic properties. For new entities, always set to `false`.
+- **Confidence Scoring**: Include confidence levels with clear justification based on evidence strength.
 
 Begin your detective work and discover the hidden knowledge!
 """
