@@ -1,9 +1,11 @@
 import hashlib
-
+import logging
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
 from utils.uuid_utils import validate_uuid_list
+
+logger = logging.getLogger(__name__)
 
 
 def query_entities_by_ids(db: Session, entities_id: list[str]):
@@ -11,7 +13,7 @@ def query_entities_by_ids(db: Session, entities_id: list[str]):
     valid_ids = validate_uuid_list(entities_id)
 
     if not valid_ids:
-        print("No valid UUIDs provided for entity query")
+        logger.warning("No valid UUIDs provided for entity query")
         return {}
 
     sql = text(
@@ -29,7 +31,7 @@ def query_entities_by_ids(db: Session, entities_id: list[str]):
                 "attributes": row.attributes,
             }
     except Exception as e:
-        print("Failed to query entities", e)
+        logger.error(f"Failed to query entities: {e}")
         return {}
 
     return entities
@@ -40,7 +42,7 @@ def get_relationship_by_entity_ids(db: Session, entity_ids: list[str]):
     valid_ids = validate_uuid_list(entity_ids)
 
     if not valid_ids:
-        print("No valid UUIDs provided for relationship query by entity IDs")
+        logger.warning("No valid UUIDs provided for relationship query by entity IDs")
         return {}
 
     sql = text(
@@ -63,7 +65,7 @@ def get_relationship_by_entity_ids(db: Session, entity_ids: list[str]):
                 "attributes": row.attributes,
             }
     except Exception as e:
-        print("Failed to get relationships", e)
+        logger.error(f"Failed to get relationships: {e}")
         return {}
 
     return background_relationships
@@ -74,7 +76,7 @@ def get_relationship_by_ids(db: Session, relationship_ids: list[str]):
     valid_ids = validate_uuid_list(relationship_ids)
 
     if not valid_ids:
-        print("No valid UUIDs provided for relationship query by IDs")
+        logger.warning("No valid UUIDs provided for relationship query by IDs")
         return {}
 
     sql = text(
@@ -107,7 +109,7 @@ def get_relationship_by_ids(db: Session, relationship_ids: list[str]):
                 "attributes": row.attributes,
             }
     except Exception as e:
-        print("Failed to get relationships", e)
+        logger.error(f"Failed to get relationships: {e}")
         return {}
 
     return background_relationships
@@ -118,7 +120,7 @@ def get_source_data_by_ids(db: Session, source_data_ids: list[str]):
     valid_ids = validate_uuid_list(source_data_ids)
 
     if not valid_ids:
-        print("No valid UUIDs provided for source data query by IDs")
+        logger.warning("No valid UUIDs provided for source data query by IDs")
         return {}
 
     sql = text(
@@ -140,7 +142,7 @@ def get_source_data_by_ids(db: Session, source_data_ids: list[str]):
                 "attributes": row.attributes,
             }
     except Exception as e:
-        print("Failed to get source data", e)
+        logger.error(f"Failed to get source data: {e}")
         return {}
 
     return source_data
@@ -151,7 +153,7 @@ def get_source_data_by_entity_ids(db: Session, entity_ids: list[str]):
     valid_ids = validate_uuid_list(entity_ids)
 
     if not valid_ids:
-        print("No valid UUIDs provided for source data query by entity IDs")
+        logger.warning("No valid UUIDs provided for source data query by entity IDs")
         return []
 
     sql = text(
@@ -184,7 +186,7 @@ def get_source_data_by_entity_ids(db: Session, entity_ids: list[str]):
                 "attributes": row.attributes,
             }
     except Exception as e:
-        print("Failed to get source data by entity ids", e)
+        logger.error(f"Failed to get source data by entity ids: {e}")
         return {}
 
     return list(source_data.values())
@@ -195,7 +197,9 @@ def get_source_data_by_relationship_ids(db: Session, relationship_ids: list[str]
     valid_ids = validate_uuid_list(relationship_ids)
 
     if not valid_ids:
-        print("No valid UUIDs provided for source data query by relationship IDs")
+        logger.warning(
+            "No valid UUIDs provided for source data query by relationship IDs"
+        )
         return []
 
     sql = text(
@@ -228,7 +232,7 @@ def get_source_data_by_relationship_ids(db: Session, relationship_ids: list[str]
                 "attributes": row.attributes,
             }
     except Exception as e:
-        print("Failed to get source data by relationship ids", e)
+        logger.error(f"Failed to get source data by relationship ids: {e}")
         return {}
 
     return list(source_data.values())

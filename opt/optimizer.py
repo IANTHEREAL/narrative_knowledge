@@ -3,7 +3,7 @@ import os
 import logging
 
 from setting.db import db_manager
-from utils.json_utils import extract_json
+from utils.json_utils import robust_json_parse
 from utils.token import calculate_tokens
 from opt.graph_retrieval import (
     query_entities_by_ids,
@@ -16,13 +16,13 @@ from llm.embedding import (
     get_entity_description_embedding,
     get_text_embedding,
 )
-from llm.factory import LLMInterface
 
-session_factory = db_manager.get_session_factory(os.getenv("GRAPH_DATABASE_URI"))
+logger = logging.getLogger(__name__)
 
 ##### refine entity
 
-def refine_entity(llm_client, issue, entity, relationships, source_data_list):
+
+def improve_entity_quality(llm_client, issue, entity, relationships, source_data_list):
     format_relationships = []
     consumed_tokens = 0
     for relationship in relationships.values():
@@ -133,41 +133,39 @@ Based on all the provided information and guidelines, exercising your expert jud
 
     try:
         token_count = calculate_tokens(improve_entity_quality_prompt)
-        print(f"improve entity quality prompt token count: {token_count}")
+        logger.info(f"improve entity quality prompt token count: {token_count}")
         response = llm_client.generate(
             improve_entity_quality_prompt, max_tokens=token_count + 1024
-            )
-        json_str = extract_json(response)
-        json_str = "".join(
-            char for char in json_str if ord(char) >= 32 or char in "\r\t"
         )
-        return json.loads(json_str)
+        return robust_json_parse(response, "object", llm_client)
     except Exception as e:
-        print("Failed to improve entity quality", e)
+        logger.error(f"Failed to improve entity quality: {e}")
         return None
 
 
 def process_entity_quality_issue(
-    llm_client, entity_model, relationship_model, row_index, row_issue
+    session_factory, llm_client, entity_model, relationship_model, row_index, row_issue
 ):
-    print(f"start to process entity {row_index}")
-    with session_factory() as session:
-        try:
-            for affected_id in row_issue["affected_ids"]:
-                entity_quality_issue = {
-                    "issue_type": row_issue["issue_type"],
-                    "reasoning": row_issue["reasoning"],
-                    "affected_ids": [affected_id],
-                }
+    resolved_entities = {}
 
-                print(f"process entity({row_index}), {entity_quality_issue}")
+    for affected_id in row_issue["affected_ids"]:
+        entity_quality_issue = {
+            "issue_type": row_issue["issue_type"],
+            "reasoning": row_issue["reasoning"],
+            "affected_ids": [affected_id],
+        }
 
+        logger.info(
+            f"process entity quality issue ({row_index}), {entity_quality_issue}"
+        )
+        with session_factory() as session:
+            try:
                 entities = query_entities_by_ids(
                     session, entity_quality_issue["affected_ids"]
                 )
-                print(f"Pendding entities({row_index})", entities)
+                logger.info(f"Pendding entities({row_index})", entities)
                 if len(entities) == 0:
-                    print(f"Failed to find entity({row_index}) {affected_id}")
+                    logger.error(f"Failed to find entity({row_index}) {affected_id}")
                     return False
 
                 relationships = get_relationship_by_entity_ids(
@@ -178,15 +176,34 @@ def process_entity_quality_issue(
                     session, entity_quality_issue["affected_ids"]
                 )
 
-                updated_entity = refine_entity(
+                updated_entity = improve_entity_quality(
                     llm_client,
                     entity_quality_issue,
                     entities,
                     relationships,
                     source_data_list,
                 )
-                print("updated entity", updated_entity)
+                logger.info(f"updated entity: {updated_entity}")
+                resolved_entities[affected_id] = updated_entity
+            except Exception as e:
+                # No rollback needed for read-only operations
+                logger.error(
+                    f"Failed to improve entity quality({row_index}) {affected_id}: {e}"
+                )
+                continue
 
+    # Phase 2: Batch update all successfully processed entities
+    if not resolved_entities:
+        logger.warning(f"No entities were successfully processed for row({row_index})")
+        return False
+
+    logger.info(
+        f"Starting batch update for {len(resolved_entities)} entities({row_index})"
+    )
+
+    with session_factory() as session:
+        try:
+            for affected_id, updated_entity in resolved_entities.items():
                 if (
                     updated_entity is not None
                     and isinstance(updated_entity, dict)
@@ -218,26 +235,28 @@ def process_entity_quality_issue(
                             )
                         )
                         session.add(existing_entity)
-                        print(
+                        logger.info(
                             f"Success update entity({row_index}) {affected_id} to {updated_entity}"
                         )
                     else:
-                        print(
-                            f"Failed to find entity({row_index}) {affected_id} to update"
+                        logger.error(
+                            f"Not found entity({row_index}) {affected_id} to update"
                         )
                         return False
                 else:
-                    print(
-                        f"Failed to refine entity({row_index}), which is invalid or empty."
+                    logger.error(
+                        f"Failed to improve entity quality({row_index}), which is invalid or empty. {updated_entity}"
                     )
                     return False
             session.commit()
         except Exception as e:
-            logging.error(f"Failed to refine entity {row_index}: {e}", exc_info=True)
+            logging.error(
+                f"Failed to improve entity quality({row_index}): {e}", exc_info=True
+            )
             session.rollback()
             return False
 
-    return True
+        return True
 
 
 ##### merge entities
@@ -250,7 +269,7 @@ def merge_entity(llm_client, issue, entities, relationships, source_data_list):
     for relationship in relationships.values():
         relationship_str = f"""{relationship['source_entity_name']} -> {relationship['target_entity_name']}: {relationship['relationship_desc']}"""
         consumed_tokens += calculate_tokens(relationship_str)
-        if consumed_tokens > 20000:
+        if consumed_tokens > 30000:
             break
         format_relationships.append(relationship_str)
 
@@ -385,28 +404,36 @@ Based on all the provided information and guidelines, exercising your expert jud
 
     try:
         token_count = calculate_tokens(merge_entity_prompt)
-        print(f"merge entity prompt token count: {token_count}")
-        response = llm_client.generate(merge_entity_prompt, max_tokens=token_count + 1024)
-        json_str = extract_json(response)
-        json_str = "".join(
-            char for char in json_str if ord(char) >= 32 or char in "\r\t"
+        logger.info(f"merge entity prompt token count: {token_count}")
+        response = llm_client.generate(
+            merge_entity_prompt, max_tokens=token_count + 1024
         )
-        return json.loads(json_str)
+        return robust_json_parse(response, "object", llm_client)
     except Exception as e:
-        print("Failed to merge entity", e, response)
+        logger.error(f"Failed to merge entity: {e}", exc_info=True)
         return None
 
 
 def process_redundancy_entity_issue(
-    llm_client, entity_model, relationship_model, source_graph_mapping_model, row_key, row_issue
+    session_factory,
+    llm_client,
+    entity_model,
+    relationship_model,
+    source_graph_mapping_model,
+    row_key,
+    row_issue,
 ):
-    print(f"start to merge entity({row_key}) for {row_issue}")
+    logger.info(f"start to process redundancy entity issue({row_key}) for {row_issue}")
+
+    # Phase 1: Collect data and perform LLM merge (outside of session for database operations)
     with session_factory() as session:
         try:
             entities = query_entities_by_ids(session, row_issue["affected_ids"])
-            print(f"pending entities({row_key})", entities)
+            logger.info(f"pending entities({row_key})", entities)
             if len(entities) == 0:
-                print(f"Failed to find entity({row_key}) {row_issue['affected_ids']}")
+                logger.error(
+                    f"Failed to find entity({row_key}) {row_issue['affected_ids']}"
+                )
                 return False
 
             relationships = get_relationship_by_entity_ids(
@@ -415,11 +442,26 @@ def process_redundancy_entity_issue(
             source_data_list = get_source_data_by_entity_ids(
                 session, row_issue["affected_ids"]
             )
-
-            merged_entity = merge_entity(
-                llm_client, row_issue, entities, relationships, source_data_list
+        except Exception as e:
+            logger.error(
+                f"Failed to collect data for entity merge({row_key}): {e}",
+                exc_info=True,
             )
-            print(f"merged entity({row_key}) {merged_entity}")
+            return False
+
+    # Perform LLM merge outside of database session
+    try:
+        merged_entity = merge_entity(
+            llm_client, row_issue, entities, relationships, source_data_list
+        )
+        logger.info(f"merged entity({row_key}) {merged_entity}")
+    except Exception as e:
+        logger.error(f"Failed to merge entity with LLM({row_key}): {e}", exc_info=True)
+        return False
+
+    # Phase 2: Apply database operations in a separate session
+    with session_factory() as session:
+        try:
 
             if (
                 merged_entity is not None
@@ -439,7 +481,7 @@ def process_redundancy_entity_issue(
                 session.add(new_entity)
                 session.flush()
                 merged_entity_id = new_entity.id
-                print(
+                logger.info(
                     f"Merged entity({row_key}) created with ID: {new_entity.name}({merged_entity_id})"
                 )
                 original_entity_ids = {entity["id"] for entity in entities.values()}
@@ -461,8 +503,12 @@ def process_redundancy_entity_issue(
                 session.execute(
                     source_graph_mapping_model.__table__.update()
                     .where(
-                        (source_graph_mapping_model.graph_element_id.in_(original_entity_ids)) &
-                        (source_graph_mapping_model.graph_element_type == "entity")
+                        (
+                            source_graph_mapping_model.graph_element_id.in_(
+                                original_entity_ids
+                            )
+                        )
+                        & (source_graph_mapping_model.graph_element_type == "entity")
                     )
                     .values(graph_element_id=merged_entity_id)
                 )
@@ -474,18 +520,23 @@ def process_redundancy_entity_issue(
                     )
                 )
 
-                print(
+                logger.info(
                     f"Relationships and source mappings updated, original entities deleted for merged entity({row_key}) {merged_entity_id}"
                 )
 
                 session.commit()  # Commit the relationship updates
-                print(f"Merged entity({row_key}) processing complete.")
+                logger.info(f"Merged entity({row_key}) processing complete.")
                 return True
             else:
-                print(f"Failed to merge entity({row_key}), which is invalid or empty.")
+                logger.error(
+                    f"Failed to merge entity({row_key}), which is invalid or empty."
+                )
                 return False
         except Exception as e:
-            logging.error(f"Failed to merge entity({row_key}): {e}", exc_info=True)
+            logger.error(
+                f"Failed to apply entity merge to database({row_key}): {e}",
+                exc_info=True,
+            )
             session.rollback()
             return False
 
@@ -493,7 +544,9 @@ def process_redundancy_entity_issue(
 ##### refine relationship quality
 
 
-def refine_relationship_quality(llm_client, issue, entities, relationships, source_data_list):
+def refine_relationship_quality(
+    llm_client, issue, entities, relationships, source_data_list
+):
     format_relationships = []
     consumed_tokens = 0
     for relationship in relationships.values():
@@ -597,39 +650,40 @@ Based on all the provided information and guidelines, exercising your expert jud
 
     try:
         token_count = calculate_tokens(refine_relationship_quality_prompt)
-        print(f"refine relationship quality prompt token count: {token_count}")
-        response = llm_client.generate(refine_relationship_quality_prompt, max_tokens=token_count + 1024)
-        json_str = extract_json(response)
-        json_str = "".join(
-            char for char in json_str if ord(char) >= 32 or char in "\r\t"
+        logger.info(f"refine relationship quality prompt token count: {token_count}")
+        response = llm_client.generate(
+            refine_relationship_quality_prompt, max_tokens=token_count + 1024
         )
-        return json.loads(json_str)
+        return robust_json_parse(response, "object", llm_client)
     except Exception as e:
-        print("Failed to refine relationship quality", e)
+        logger.error(f"Failed to refine relationship quality: {e}", exc_info=True)
         return None
 
 
 def process_relationship_quality_issue(
-    llm_client, relationship_model, row_key, row_issue
+    session_factory, llm_client, relationship_model, row_key, row_issue
 ):
-    print(f"start to process relationship({row_key})")
-    with session_factory() as session:
-        try:
-            for affected_id in row_issue["affected_ids"]:
-                relationship_quality_issue = {
-                    "issue_type": row_issue["issue_type"],
-                    "reasoning": row_issue["reasoning"],
-                    "affected_ids": [affected_id],
-                }
+    logger.info(f"start to process relationship({row_key})")
+    resolved_relationships = {}
 
-                print(f"process relationship({row_key}), {relationship_quality_issue}")
+    for affected_id in row_issue["affected_ids"]:
+        relationship_quality_issue = {
+            "issue_type": row_issue["issue_type"],
+            "reasoning": row_issue["reasoning"],
+            "affected_ids": [affected_id],
+        }
 
+        logger.info(f"process relationship({row_key}), {relationship_quality_issue}")
+        with session_factory() as session:
+            try:
                 relationships = get_relationship_by_ids(
                     session, relationship_quality_issue["affected_ids"]
                 )
-                print(f"Pendding relationships({row_key})", relationships)
+                logger.info(f"Pendding relationships({row_key})", relationships)
                 if len(relationships) == 0:
-                    print(f"Failed to find relationship({row_key}) {affected_id}")
+                    logger.error(
+                        f"Failed to find relationship({row_key}) {affected_id}"
+                    )
                     return False
 
                 source_data_list = get_source_data_by_relationship_ids(
@@ -637,10 +691,35 @@ def process_relationship_quality_issue(
                 )
 
                 updated_relationship = refine_relationship_quality(
-                    llm_client, relationship_quality_issue, [], relationships, source_data_list
+                    llm_client,
+                    relationship_quality_issue,
+                    [],
+                    relationships,
+                    source_data_list,
                 )
-                print("updated relationship", updated_relationship)
+                logger.info("updated relationship", updated_relationship)
+                resolved_relationships[affected_id] = updated_relationship
+            except Exception as e:
+                # No rollback needed for read-only operations
+                logger.error(
+                    f"Failed to refine relationship({row_key}) {affected_id}: {e}"
+                )
+                continue
 
+    # Phase 2: Batch update all successfully processed relationships
+    if not resolved_relationships:
+        logger.warning(
+            f"No relationships were successfully processed for row({row_key})"
+        )
+        return False
+
+    logger.info(
+        f"Starting batch update for {len(resolved_relationships)} relationships({row_key})"
+    )
+
+    with session_factory() as session:
+        try:
+            for affected_id, updated_relationship in resolved_relationships.items():
                 if (
                     updated_relationship is not None
                     and isinstance(updated_relationship, dict)
@@ -655,8 +734,10 @@ def process_relationship_quality_issue(
                         existing_relationship.relationship_desc = updated_relationship[
                             "relationship_desc"
                         ]
-                        existing_relationship.relationship_desc_vec = get_text_embedding(
-                            updated_relationship["relationship_desc"]
+                        existing_relationship.relationship_desc_vec = (
+                            get_text_embedding(
+                                updated_relationship["relationship_desc"]
+                            )
                         )
                         # Update attributes if provided, preserving important existing fields
                         if "attributes" in updated_relationship:
@@ -668,26 +749,37 @@ def process_relationship_quality_issue(
                             # Preserve common important fields that should not be lost
                             important_fields = ["topic_name", "category"]
                             for field in important_fields:
-                                if field in existing_attrs and field not in new_attributes:
+                                if (
+                                    field in existing_attrs
+                                    and field not in new_attributes
+                                ):
                                     new_attributes[field] = existing_attrs[field]
                             existing_relationship.attributes = new_attributes
                         # If no new attributes provided, keep existing ones unchanged
                         session.add(existing_relationship)
-                        print(
-                            f"Success update relationship({row_key}) {affected_id} to {updated_relationship}"
+                        logger.info(
+                            f"Prepared relationship({row_key}) {affected_id} for batch update"
                         )
                     else:
-                        print(f"Failed to find relationship({row_key}) {affected_id}")
-                        return False
+                        logger.error(
+                            f"Failed to find relationship({row_key}) {affected_id}"
+                        )
+                        # Don't return False here, continue with other relationships
                 else:
-                    print(
-                        f"Failed to refine relationship({row_key}), which is invalid or empty."
+                    logger.error(
+                        f"Invalid relationship quality result({row_key}) {affected_id}: {updated_relationship}"
                     )
-                    return False
+                    # Don't return False here, continue with other relationships
+
+            # Commit all changes at once
             session.commit()
+            logger.info(
+                f"Successfully batch updated {len(resolved_relationships)} relationships for row({row_key})"
+            )
         except Exception as e:
-            logging.error(
-                f"Failed to refine relationship {row_key}: {e}", exc_info=True
+            logger.error(
+                f"Failed to batch update relationships for row({row_key}): {e}",
+                exc_info=True,
             )
             session.rollback()
             return False
@@ -809,40 +901,46 @@ Based on all the provided information and guidelines, exercising your expert jud
 
     try:
         token_count = calculate_tokens(merge_relationship_prompt)
-        print(f"merge relationship prompt token count: {token_count}")
-        response = llm_client.generate(merge_relationship_prompt, max_tokens=token_count + 1024)
-        json_str = extract_json(response)
-        json_str = "".join(
-            char for char in json_str if ord(char) >= 32 or char in "\r\t"
+        logger.info(f"merge relationship prompt token count: {token_count}")
+        response = llm_client.generate(
+            merge_relationship_prompt, max_tokens=token_count + 1024
         )
-        return json.loads(json_str)
+        return robust_json_parse(response, "object", llm_client)
     except Exception as e:
-        print("Failed to merge relationship", e)
+        logger.error(f"Failed to merge relationship: {e}", exc_info=True)
         return None
 
 
 def process_redundancy_relationship_issue(
-    llm_client, relationship_model, source_graph_mapping_model, row_key, row_issue
+    session_factory,
+    llm_client,
+    relationship_model,
+    source_graph_mapping_model,
+    row_key,
+    row_issue,
 ):
-    print(f"start to merge relationships {row_key} for {row_issue}")
+    logger.info(
+        f"start to process redundancy relationship issue({row_key}) for {row_issue}"
+    )
+
+    # Phase 1: Collect data and validate relationships
     with session_factory() as session:
         try:
             relationships = get_relationship_by_ids(session, row_issue["affected_ids"])
-            print(f"pending relationships({row_key})", relationships)
+            logger.info(f"pending relationships({row_key})", relationships)
             if len(relationships) < 2:
-                print(
+                logger.info(
                     f"skip, not enough relationships to merge - ({row_key}) {row_issue['affected_ids']}"
                 )
                 return True
 
             entity_pairs = set()
             for relationship in relationships.values():
-                print(f"relationship: {relationship}")
                 entity_pairs.add(relationship["source_entity_id"])
                 entity_pairs.add(relationship["target_entity_id"])
 
             if len(entity_pairs) != 1 and len(entity_pairs) != 2:
-                print(
+                logger.info(
                     f"skip, incapabble to merge relationship between different entities - ({row_key}) {relationships}"
                 )
                 return True
@@ -850,11 +948,28 @@ def process_redundancy_relationship_issue(
             source_data_list = get_source_data_by_relationship_ids(
                 session, row_issue["affected_ids"]
             )
-
-            merged_relationship = merge_relationship(
-                llm_client, row_issue, [], relationships, source_data_list
+        except Exception as e:
+            logger.error(
+                f"Failed to collect data for relationship merge({row_key}): {e}",
+                exc_info=True,
             )
-            print("merged relationship", merged_relationship)
+            return False
+
+    # Perform LLM merge outside of database session
+    try:
+        merged_relationship = merge_relationship(
+            llm_client, row_issue, [], relationships, source_data_list
+        )
+        logger.info("merged relationship", merged_relationship)
+    except Exception as e:
+        logger.error(
+            f"Failed to merge relationship with LLM({row_key}): {e}", exc_info=True
+        )
+        return False
+
+    # Phase 2: Apply database operations in a separate session
+    with session_factory() as session:
+        try:
 
             # Get the actual entity IDs from the original relationships (they should all be the same)
             first_relationship = next(iter(relationships.values()))
@@ -895,23 +1010,30 @@ def process_redundancy_relationship_issue(
                 session.add(new_relationship)
                 session.flush()
                 merged_relationship_id = new_relationship.id
-                print(
+                logger.info(
                     f"Merged relationship created with ID: {new_relationship.source_entity_id} -> {new_relationship.target_entity_id}({merged_relationship_id})"
                 )
                 original_relationship_ids = {
                     relationship["id"] for relationship in relationships.values()
                 }
-                
+
                 # Step 1: Update source graph mapping table before deleting original relationships
                 session.execute(
                     source_graph_mapping_model.__table__.update()
                     .where(
-                        (source_graph_mapping_model.graph_element_id.in_(original_relationship_ids)) &
-                        (source_graph_mapping_model.graph_element_type == "relationship")
+                        (
+                            source_graph_mapping_model.graph_element_id.in_(
+                                original_relationship_ids
+                            )
+                        )
+                        & (
+                            source_graph_mapping_model.graph_element_type
+                            == "relationship"
+                        )
                     )
                     .values(graph_element_id=merged_relationship_id)
                 )
-                
+
                 # Step 2: Remove the original relationships
                 session.execute(
                     relationship_model.__table__.delete().where(
@@ -919,16 +1041,21 @@ def process_redundancy_relationship_issue(
                     )
                 )
 
-                print(f"Source mappings updated and deleted {len(original_relationship_ids)} relationships")
+                logger.info(
+                    f"Source mappings updated and deleted {len(original_relationship_ids)} relationships"
+                )
                 session.commit()  # Commit the relationship updates
-                print(f"Merged relationship {row_key} processing complete.")
+                logger.info(f"Merged relationship {row_key} processing complete.")
                 return True
             else:
-                print(
+                logger.error(
                     f"Failed to merge relationship({row_key}), which is invalid or empty."
                 )
                 return False
         except Exception as e:
-            logging.error(f"Failed to merge relationship {row_key}: {e}", exc_info=True)
+            logger.error(
+                f"Failed to apply relationship merge to database({row_key}): {e}",
+                exc_info=True,
+            )
             session.rollback()
             return False

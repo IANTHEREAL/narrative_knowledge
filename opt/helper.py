@@ -1,6 +1,9 @@
 import json
+import logging
 
-from utils.json_utils import extract_json
+from utils.json_utils import robust_json_parse
+
+logger = logging.getLogger(__name__)
 
 GRAPH_OPTIMIZATION_ACTION_SYSTEM_PROMPT_WO_MR = """You are Graph-GPT, a knowledge graph expert. Your task is to meticulously analyze the provided knowledge graph data to identify and describe specific issues according to the defined quality objectives and issue types below. Your goal is to facilitate targeted quality improvements while preserving the graph's knowledge integrity.
 
@@ -106,8 +109,12 @@ Now, Please take more time to think and be comprehensive in your issue, ensure y
 
 
 def extract_issues(response: str):
-    response_json_str = extract_json(response)
-    if response_json_str is None or response_json_str == "":
+    try:
+        analysis_tags = robust_json_parse(response, "array")
+    except Exception as e:
+        logger.error(
+            f"Error extracting issues from response: {e}, response: {response}"
+        )
         return {
             "entity_redundancy_issues": [],
             "relationship_redundancy_issues": [],
@@ -115,7 +122,6 @@ def extract_issues(response: str):
             "relationship_quality_issues": [],
             "missing_relationship_issues": [],
         }
-    analysis_tags = json.loads(response_json_str)
 
     entity_redundancy_issues = []
     relationship_redundancy_issues = []
