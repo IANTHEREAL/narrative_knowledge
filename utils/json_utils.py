@@ -6,7 +6,9 @@ from typing import Optional, Tuple, Dict, Any
 logger = logging.getLogger(__name__)
 
 
-def robust_json_parse(response: str, llm_client, expected_format: str = "auto") -> Any:
+def robust_json_parse(
+    response: str, expected_format: str = "auto", llm_client=None
+) -> Any:
     """
     Parse JSON with targeted escape error fixing and LLM fallback.
 
@@ -45,10 +47,17 @@ def robust_json_parse(response: str, llm_client, expected_format: str = "auto") 
                 fixed_json = fix_escape_errors(json_str)
                 return json.loads(fixed_json)
             except json.JSONDecodeError:
-                logger.info("Escape fix failed, falling back to LLM")
+                logger.info("Escape fix failed")
+
+        if llm_client is None:
+            logger.warning(
+                f"JSON parsing failed and no LLM client available for repair: {error_msg}"
+            )
+            raise
 
         # Step 4: For all other errors (including escape fix failures), use LLM
         logger.info(f"JSON error ({error_msg}), using LLM to fix")
+
         return llm_repair_json(
             broken_json=json_str,
             original_response=response,
@@ -56,18 +65,22 @@ def robust_json_parse(response: str, llm_client, expected_format: str = "auto") 
             expected_format=expected_format,
             llm_client=llm_client,
         )
-
     except ValueError as e:
         if "No valid JSON" in str(e):
-            # No JSON structure found, ask LLM to generate
-            logger.info("No JSON found in response, asking LLM to generate")
-            return llm_repair_json(
-                broken_json=None,
-                original_response=response,
-                error_type="No JSON structure found",
-                expected_format=expected_format,
-                llm_client=llm_client,
-            )
+            if llm_client is not None:
+                # No JSON structure found, ask LLM to generate
+                logger.info("No JSON found in response, asking LLM to generate")
+                return llm_repair_json(
+                    broken_json=None,
+                    original_response=response,
+                    error_type="No JSON structure found",
+                    expected_format=expected_format,
+                    llm_client=llm_client,
+                )
+            else:
+                logger.warning(
+                    f"No valid JSON found and no LLM client available for generation: {str(e)}"
+                )
         raise
 
 
@@ -181,28 +194,6 @@ def extract_json_from_response(response: str) -> str:
         return json_arr
 
     raise ValueError("No valid JSON found in response")
-
-
-# TODO: Add specific handlers for other error types as needed
-# Example structure for future extensions:
-#
-# def fix_delimiter_errors(json_str: str) -> str:
-#     """Fix missing comma or delimiter issues."""
-#     # Implement specific delimiter fixing logic
-#     pass
-#
-# def fix_property_name_errors(json_str: str) -> str:
-#     """Fix unquoted property names."""
-#     # Implement property name quoting logic
-#     pass
-#
-# Then add to robust_json_parse():
-# elif "Expecting ',' delimiter" in error_msg:
-#     try:
-#         fixed_json = fix_delimiter_errors(json_str)
-#         return json.loads(fixed_json)
-#     except json.JSONDecodeError:
-#         logger.info("Delimiter fix failed, falling back to LLM")
 
 
 def extract_json(response: str) -> str:

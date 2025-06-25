@@ -51,7 +51,7 @@ class NarrativeKnowledgeGraphBuilder:
         Parse LLM JSON response with escape error fixing and LLM fallback.
         Focuses on escape issues with simple fallback strategy.
         """
-        return robust_json_parse(response, self.llm_client, expected_format)
+        return robust_json_parse(response, expected_format, self.llm_client)
 
     def generate_analysis_blueprint(
         self,

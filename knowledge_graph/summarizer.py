@@ -269,7 +269,7 @@ Return only the JSON, no other text."""
             response = self.llm_client.generate(summary_prompt)
 
             # Use robust JSON parsing with escape error fixing and LLM fallback
-            summary_data = robust_json_parse(response, self.llm_client, "object")
+            summary_data = robust_json_parse(response, "object", self.llm_client)
 
             # Validate required fields
             required_fields = ["summary_content", "key_entities", "main_themes"]
