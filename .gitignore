@@ -8,3 +8,4 @@ test.py
 .DS_Store
 tmp_run.ipynb
 test_data.pkl
+*.json
