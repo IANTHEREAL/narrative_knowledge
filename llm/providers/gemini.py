@@ -32,7 +32,6 @@ class GeminiProvider(BaseLLMProvider):
             self.client.models.generate_content,
             model=self.model,
             contents=full_prompt,
-            **kwargs,
         )
         return response.text.strip()
 
@@ -48,7 +47,6 @@ class GeminiProvider(BaseLLMProvider):
                 self.client.models.generate_content_stream,
                 model=self.model,
                 contents=full_prompt,
-                **kwargs,
             )
 
             for resp in response:
