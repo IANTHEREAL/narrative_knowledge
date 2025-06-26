@@ -14,7 +14,6 @@ Key Features:
 
 import logging
 import json
-import pandas as pd
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Any, Callable, Union
@@ -56,7 +55,7 @@ class LLMConfig:
 class ProcessingConfig:
     """Processing configuration for the optimization engine"""
 
-    max_concurrent_issues: int = 1
+    max_concurrent_issues: int = 3
     confidence_threshold: float = 0.9
     similarity_threshold: float = 0.3
     top_k_retrieval: int = 30
@@ -238,152 +237,303 @@ class IssueProcessor:
         self.models = models
         self.max_concurrent_issues = max_concurrent_issues
 
-    def process_issues_by_type(
-        self,
-        issue_type: str,
-        pending_issues: Dict,
-        issue_cache: Dict,
-        issue_df: pd.DataFrame,
-        state_file: str,
-    ) -> Dict:
-        """Process issues by type with appropriate processor"""
+    def process_issues_list(self, issues: List[Issue]) -> int:
+        """
+        Modern interface to process a list of Issue objects directly.
 
+        Args:
+            issues: List of Issue objects to process
+
+        Returns:
+            Number of successfully resolved issues
+        """
+        if not issues:
+            return 0
+
+        # Group issues by type for efficient processing
+        issues_by_type = {}
+        for issue in issues:
+            issue_type = issue.issue_type
+            if issue_type not in issues_by_type:
+                issues_by_type[issue_type] = []
+            issues_by_type[issue_type].append(issue)
+
+        total_resolved = 0
+
+        # Process each issue type
+        for issue_type, type_issues in issues_by_type.items():
+            logger.info(f"Processing {len(type_issues)} {issue_type} issues")
+
+            try:
+                resolved_count = self._process_issue_type_modern(
+                    issue_type, type_issues
+                )
+                total_resolved += resolved_count
+                logger.info(
+                    f"Successfully processed {resolved_count}/{len(type_issues)} {issue_type} issues"
+                )
+
+            except Exception as e:
+                logger.error(f"Error processing {issue_type} issues: {e}")
+
+        return total_resolved
+
+    def _process_issue_type_modern(self, issue_type: str, issues: List[Issue]) -> int:
+        """Process issues of a specific type using modern Issue objects"""
+
+        # Get the appropriate processing function and arguments
         if issue_type == "entity_quality_issue":
-            return self._process_issues_concurrently(
-                pending_issues,
-                issue_cache,
-                issue_df,
-                state_file,
-                process_entity_quality_issue,
-                [
-                    self.session_factory,
-                    self.llm_client,
-                    self.models["Entity"],
-                    self.models["Relationship"],
-                ],
-            )
+            process_func = process_entity_quality_issue
+            base_args = [
+                self.session_factory,
+                self.llm_client,
+                self.models["Entity"],
+                self.models["Relationship"],
+            ]
         elif issue_type == "redundancy_entity":
-            return self._process_issues_concurrently(
-                pending_issues,
-                issue_cache,
-                issue_df,
-                state_file,
-                process_redundancy_entity_issue,
-                [
-                    self.session_factory,
-                    self.llm_client,
-                    self.models["Entity"],
-                    self.models["Relationship"],
-                    self.models["SourceGraphMapping"],
-                ],
-            )
+            process_func = process_redundancy_entity_issue
+            base_args = [
+                self.session_factory,
+                self.llm_client,
+                self.models["Entity"],
+                self.models["Relationship"],
+                self.models["SourceGraphMapping"],
+            ]
         elif issue_type == "relationship_quality_issue":
-            return self._process_issues_concurrently(
-                pending_issues,
-                issue_cache,
-                issue_df,
-                state_file,
-                process_relationship_quality_issue,
-                [self.session_factory, self.llm_client, self.models["Relationship"]],
-            )
+            process_func = process_relationship_quality_issue
+            base_args = [
+                self.session_factory,
+                self.llm_client,
+                self.models["Relationship"],
+            ]
         elif issue_type == "redundancy_relationship":
-            return self._process_issues_concurrently(
-                pending_issues,
-                issue_cache,
-                issue_df,
-                state_file,
-                process_redundancy_relationship_issue,
-                [
-                    self.session_factory,
-                    self.llm_client,
-                    self.models["Relationship"],
-                    self.models["SourceGraphMapping"],
-                ],
-            )
+            process_func = process_redundancy_relationship_issue
+            base_args = [
+                self.session_factory,
+                self.llm_client,
+                self.models["Relationship"],
+                self.models["SourceGraphMapping"],
+            ]
         else:
             logger.warning(f"Unknown issue type: {issue_type}")
-            return issue_cache
+            return 0
 
-    def _process_issues_concurrently(
-        self,
-        pending_issues: Dict,
-        issue_cache: Dict,
-        issue_df: pd.DataFrame,
-        state_file: str,
-        process_func: Callable,
-        base_args: List,
-    ) -> Dict:
-        """Generic concurrent processing for different issue types"""
-        while pending_issues:
-            # Get batch for processing
-            keys_for_batch = list(pending_issues.keys())[: self.max_concurrent_issues]
-            if not keys_for_batch:
-                break
+        resolved_count = 0
 
-            batch_issues = []
-            for key in keys_for_batch:
-                batch_issues.append(pending_issues.pop(key))
+        # Process issues with concurrency control
+        batch_size = min(self.max_concurrent_issues, len(issues))
+
+        for i in range(0, len(issues), batch_size):
+            batch = issues[i : i + batch_size]
 
             # Process batch concurrently
-            with ThreadPoolExecutor(max_workers=len(batch_issues)) as executor:
+            with ThreadPoolExecutor(max_workers=len(batch)) as executor:
                 futures = {}
-                for issue in batch_issues:
-                    # Prepare arguments based on issue type
-                    args = base_args.copy()
-                    if "row_index" in issue:
-                        args.extend([issue["row_index"], issue])
-                    else:
-                        args.extend([issue["issue_key"], issue])
 
-                    futures[executor.submit(process_func, *args)] = issue.get(
-                        "issue_key", issue.get("row_index")
+                for issue in batch:
+                    # Generate a meaningful issue key for logging and tracking
+                    issue_key = IssueKey.generate(
+                        {
+                            "issue_type": issue.issue_type,
+                            "affected_ids": issue.affected_ids,
+                        }
                     )
 
-                # Process results
+                    # Prepare arguments for the processing function
+                    args = base_args.copy()
+                    args.extend([issue_key, issue.to_dict()])  # row_key, issue_dict
+
+                    futures[executor.submit(process_func, *args)] = issue
+
+                # Collect results
                 for future in as_completed(futures):
-                    issue_key = futures[future]
+                    issue = futures[future]
                     try:
                         success = future.result()
                         if success:
-                            issue_cache[issue_key] = True
-                            logger.info(f"Successfully processed issue: {issue_key}")
+                            issue.is_resolved = True
+                            resolved_count += 1
+                            logger.info(
+                                f"Successfully processed {issue_type} issue for {issue.affected_ids}"
+                            )
+                        else:
+                            logger.warning(
+                                f"Failed to process {issue_type} issue for {issue.affected_ids}"
+                            )
                     except Exception as e:
-                        logger.error(f"Error processing issue {issue_key}: {e}")
+                        logger.error(
+                            f"Error processing {issue_type} issue {issue.affected_ids}: {e}"
+                        )
 
-            # Save state
-            issue_df.to_pickle(state_file)
-
-        return issue_cache
+        return resolved_count
 
 
 # ================== State Management ==================
 
 
 class OptimizationState:
-    """Manages optimization state persistence and recovery"""
+    """Manages optimization state persistence and recovery with efficient duplicate detection"""
 
     def __init__(self, state_file_path: str):
         self.state_file_path = state_file_path
+        self.issues: List[Issue] = []
+        self.issue_keys: set = set()
+        self._load_state()
 
-    def load_state(self) -> List[Issue]:
-        """Load optimization state from file"""
+    def _load_state(self):
+        """Load optimization state from file and build issue keys cache"""
         if os.path.exists(self.state_file_path):
             with open(self.state_file_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                return [Issue.from_dict(issue_data) for issue_data in data]
+                self.issues = [Issue.from_dict(issue_data) for issue_data in data]
         else:
-            return []
+            self.issues = []
 
-    def save_state(self, issues: List[Issue]):
+        # Build issue keys cache
+        self._rebuild_issue_keys_cache()
+        logger.info(
+            f"Loaded {len(self.issues)} issues with {len(self.issue_keys)} unique keys"
+        )
+
+    def _rebuild_issue_keys_cache(self):
+        """Rebuild the issue keys cache from current issues"""
+        self.issue_keys = set()
+        for issue in self.issues:
+            issue_key = IssueKey.generate(
+                {"issue_type": issue.issue_type, "affected_ids": issue.affected_ids}
+            )
+            self.issue_keys.add(issue_key)
+
+    def get_issues(self) -> List[Issue]:
+        """Get all current issues"""
+        return self.issues.copy()
+
+    def has_issue(self, issue: Issue) -> bool:
+        """Check if an issue already exists based on its key"""
+        issue_key = IssueKey.generate(
+            {"issue_type": issue.issue_type, "affected_ids": issue.affected_ids}
+        )
+        return issue_key in self.issue_keys
+
+    def add_unique_issues(self, new_issues: List[Issue]) -> List[Issue]:
+        """Add only unique issues that don't already exist
+
+        Args:
+            new_issues: List of potentially new issues
+
+        Returns:
+            List of issues that were actually added (unique ones)
+        """
+        added_issues = []
+        duplicates_count = 0
+
+        for issue in new_issues:
+            if not self.has_issue(issue):
+                self.issues.append(issue)
+                issue_key = IssueKey.generate(
+                    {"issue_type": issue.issue_type, "affected_ids": issue.affected_ids}
+                )
+                self.issue_keys.add(issue_key)
+                added_issues.append(issue)
+            else:
+                duplicates_count += 1
+                logger.debug(
+                    f"Skipping duplicate issue: {issue.issue_type} for {issue.affected_ids}"
+                )
+
+        if duplicates_count > 0:
+            logger.info(
+                f"Added {len(added_issues)} unique issues, filtered {duplicates_count} duplicates"
+            )
+        elif added_issues:
+            logger.info(f"Added {len(added_issues)} new unique issues")
+
+        return added_issues
+
+    def update_issues(self, updated_issues: List[Issue]):
+        """Update the entire issues list and rebuild cache"""
+        self.issues = updated_issues
+        self._rebuild_issue_keys_cache()
+
+    def save_state(self):
         """Save optimization state to file"""
-        data = [issue.to_dict() for issue in issues]
+        data = [issue.to_dict() for issue in self.issues]
         with open(self.state_file_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
 
     def clear_state(self):
-        """Clear optimization state file"""
+        """Clear optimization state file and memory"""
         if os.path.exists(self.state_file_path):
             os.remove(self.state_file_path)
+        self.issues = []
+        self.issue_keys = set()
+
+    def get_stats(self) -> Dict[str, int]:
+        """Get basic statistics about current state"""
+        return {
+            "total_issues": len(self.issues),
+            "unique_keys": len(self.issue_keys),
+            "resolved_issues": len(
+                [issue for issue in self.issues if issue.is_resolved]
+            ),
+        }
+
+    def get_optimization_stats(
+        self, confidence_threshold: float = 0.9
+    ) -> Dict[str, Any]:
+        """Get comprehensive optimization statistics"""
+        validated_issues = [
+            issue
+            for issue in self.issues
+            if issue.validation_score >= confidence_threshold
+        ]
+        resolved_issues = [issue for issue in self.issues if issue.is_resolved]
+
+        return {
+            "total_issues": len(self.issues),
+            "unique_keys": len(self.issue_keys),
+            "validated_issues": len(validated_issues),
+            "resolved_issues": len(resolved_issues),
+            "resolution_rate": (
+                len(resolved_issues) / len(validated_issues) if validated_issues else 0
+            ),
+            "issues_by_type": self._calculate_issue_type_stats(confidence_threshold),
+        }
+
+    def _calculate_issue_type_stats(
+        self, confidence_threshold: float = 0.9
+    ) -> Dict[str, Dict[str, int]]:
+        """Calculate statistics by issue type"""
+        stats = {}
+        for issue_type in [
+            "entity_quality_issue",
+            "redundancy_entity",
+            "relationship_quality_issue",
+            "redundancy_relationship",
+        ]:
+            type_issues = [
+                issue for issue in self.issues if issue.issue_type == issue_type
+            ]
+            stats[issue_type] = {
+                "detected": len(type_issues),
+                "validated": len(
+                    [
+                        issue
+                        for issue in type_issues
+                        if issue.validation_score >= confidence_threshold
+                    ]
+                ),
+                "resolved": len([issue for issue in type_issues if issue.is_resolved]),
+            }
+        return stats
+
+    def get_current_status_summary(self, confidence_threshold: float = 0.9) -> str:
+        """Get a human-readable status summary"""
+        stats = self.get_optimization_stats(confidence_threshold)
+        return (
+            f"{stats['total_issues']} total issues "
+            f"({stats['validated_issues']} validated, {stats['resolved_issues']} resolved)"
+        )
 
 
 # ================== Main Optimization Engine ==================
@@ -417,7 +567,7 @@ class GraphOptimizationEngine:
             self.config.llm_config.critique_model,
         )
 
-        self.critic_clients = {"qwen3-critic": self.critic_llm}
+        self.critic_clients = {"llm-critic": self.critic_llm}
 
         # Initialize database session factory
         self.session_factory = db_manager.get_session_factory(self.config.database_uri)
@@ -472,38 +622,78 @@ class GraphOptimizationEngine:
         }
 
         try:
-            # Load existing state
-            issues = self.state_manager.load_state()
+            # Get initial status from state manager
+            initial_stats = self.state_manager.get_optimization_stats(
+                self.config.processing_config.confidence_threshold
+            )
+            stats.update(initial_stats)
+
+            logger.info(
+                f"Starting optimization: {self.state_manager.get_current_status_summary(self.config.processing_config.confidence_threshold)}"
+            )
 
             # Stage 1: Issue Detection (if needed)
+            issues = self.state_manager.get_issues()
             if self._should_detect_new_issues(issues):
                 new_issues = self._detect_new_issues(**provider_kwargs)
                 if new_issues:
-                    issues.extend(new_issues)
-                    stats["issues_detected"] = len(new_issues)
-                    logger.info(f"Detected {len(new_issues)} new issues")
+                    # Add only unique issues using the state manager
+                    added_issues = self.state_manager.add_unique_issues(new_issues)
+                    stats["issues_detected"] = len(added_issues)
+                    if added_issues:
+                        logger.info(
+                            f"Successfully added {len(added_issues)} new unique issues"
+                        )
+                    else:
+                        logger.info(
+                            "No new unique issues detected (all were duplicates)"
+                        )
+                else:
+                    logger.info("No new issues detected")
+            else:
+                logger.info(
+                    "Skipping new issue detection (existing issues need processing)"
+                )
+
+            # Log current status
+            logger.info(
+                f"After detection: {self.state_manager.get_current_status_summary(self.config.processing_config.confidence_threshold)}"
+            )
 
             # Stage 2: Issue Evaluation
-            issues = self._evaluate_issues(issues)
-            high_confidence_issues = [
-                issue
-                for issue in issues
-                if issue.validation_score
-                >= self.config.processing_config.confidence_threshold
-            ]
-            stats["issues_validated"] = len(high_confidence_issues)
+            issues = self.state_manager.get_issues()
+            updated_issues = self._evaluate_issues(issues)
+            self.state_manager.update_issues(updated_issues)
+
+            # Log evaluation progress
+            logger.info(
+                f"After evaluation: {self.state_manager.get_current_status_summary(self.config.processing_config.confidence_threshold)}"
+            )
 
             # Stage 3: Issue Processing
-            resolved_count = self._process_issues(issues)
-            stats["issues_resolved"] = resolved_count
+            final_issues = self.state_manager.get_issues()
+            resolved_count = self._process_issues(final_issues)
 
-            # Update statistics
-            stats["issues_by_type"] = self._calculate_issue_type_stats(issues)
+            # Log final processing results
+            logger.info(
+                f"After processing: {self.state_manager.get_current_status_summary(self.config.processing_config.confidence_threshold)}"
+            )
+
+            # Get final statistics from state manager
+            final_stats = self.state_manager.get_optimization_stats(
+                self.config.processing_config.confidence_threshold
+            )
+            stats.update(final_stats)
 
             # Save final state
-            self.state_manager.save_state(issues)
+            self.state_manager.save_state()
 
-            logger.info(f"Optimization completed. Resolved {resolved_count} issues")
+            # Log completion summary
+            final_summary = self.state_manager.get_current_status_summary(
+                self.config.processing_config.confidence_threshold
+            )
+            logger.info(f"Optimization completed. Final status: {final_summary}")
+
             return stats
 
         except Exception as e:
@@ -553,87 +743,44 @@ class GraphOptimizationEngine:
 
             logger.info("Evaluating issues...")
             issues = self.issue_evaluator.evaluate_issues(issues)
-            self.state_manager.save_state(issues)
+            self.state_manager.update_issues(issues)
+            self.state_manager.save_state()
 
         return issues
 
     def _process_issues(self, issues: List[Issue]) -> int:
-        """Process all validated issues by type"""
+        """Process all validated issues using the IssueProcessor"""
         logger.info("Processing validated issues...")
 
-        resolved_count = 0
-
-        # Process issues that meet confidence threshold and are not yet resolved
-        for issue in issues:
+        # Filter issues that meet confidence threshold and are not yet resolved
+        issues_to_process = [
+            issue
+            for issue in issues
             if (
                 issue.validation_score
                 >= self.config.processing_config.confidence_threshold
                 and not issue.is_resolved
-            ):
+            )
+        ]
 
-                try:
-                    # For now, mark as resolved (actual processing logic would be more complex)
-                    # This is a simplified version - you can add actual processing logic here
-                    issue.is_resolved = True
-                    resolved_count += 1
-                    logger.info(
-                        f"Processed {issue.issue_type} issue for {issue.affected_ids}"
-                    )
+        if not issues_to_process:
+            logger.info("No issues to process")
+            return 0
 
-                except Exception as e:
-                    logger.error(f"Failed to process issue {issue.issue_type}: {e}")
+        logger.info(f"Processing {len(issues_to_process)} validated issues")
 
-        return resolved_count
-
-    def _calculate_issue_type_stats(self, issues: List[Issue]) -> Dict[str, int]:
-        """Calculate statistics by issue type"""
-        stats = {}
-        for issue_type in [
-            "entity_quality_issue",
-            "redundancy_entity",
-            "relationship_quality_issue",
-            "redundancy_relationship",
-        ]:
-            type_issues = [issue for issue in issues if issue.issue_type == issue_type]
-            stats[issue_type] = {
-                "detected": len(type_issues),
-                "validated": len(
-                    [
-                        issue
-                        for issue in type_issues
-                        if issue.validation_score
-                        >= self.config.processing_config.confidence_threshold
-                    ]
-                ),
-                "resolved": len([issue for issue in type_issues if issue.is_resolved]),
-            }
-        return stats
+        # Use the modern IssueProcessor interface
+        return self.issue_processor.process_issues_list(issues_to_process)
 
     def get_optimization_status(self) -> Dict[str, Any]:
         """Get current optimization status and statistics"""
-        issues = self.state_manager.load_state()
-
-        total_issues = len(issues)
-        validated_issues = len(
-            [
-                issue
-                for issue in issues
-                if issue.validation_score
-                >= self.config.processing_config.confidence_threshold
-            ]
+        optimization_stats = self.state_manager.get_optimization_stats(
+            self.config.processing_config.confidence_threshold
         )
-        resolved_issues = len([issue for issue in issues if issue.is_resolved])
 
-        return {
-            "total_issues": total_issues,
-            "validated_issues": validated_issues,
-            "resolved_issues": resolved_issues,
-            "resolution_rate": (
-                resolved_issues / validated_issues if validated_issues > 0 else 0
-            ),
-            "issues_by_type": self._calculate_issue_type_stats(issues),
-            "config": self.config,
-        }
+        # Add config to the status
+        optimization_stats["config"] = self.config
+        return optimization_stats
 
     def reset_optimization_state(self):
         """Reset optimization state and clear cache"""
@@ -664,25 +811,3 @@ def create_vector_search_engine(
     config.processing_config.similarity_threshold = similarity_threshold
 
     return GraphOptimizationEngine(config)
-
-
-# ================== Compatibility Layer ==================
-
-
-def improve_graph(
-    query: str, tmp_test_data_file: str = "test_data.pkl"
-) -> Dict[str, Any]:
-    """
-    Backward compatibility function that mimics the original improve_graph interface.
-
-    This function creates an optimization engine and runs the optimization process
-    with the same interface as the original script.
-    """
-    # Create engine with backward-compatible configuration
-    config = OptimizationConfig()
-    config.processing_config.state_file_path = tmp_test_data_file
-
-    engine = GraphOptimizationEngine(config)
-
-    # Run optimization
-    return engine.optimize_graph(query=query, top_k=30)

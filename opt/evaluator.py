@@ -178,12 +178,37 @@ Base your judgment solely on the graph data and the issue type definition above.
 }}
 ```"""
 
+    # Log detailed issue information
     logger.info(
         f"Evaluating {issue.issue_type} issue with {critic_name}, validation_score={issue.validation_score}"
     )
+    logger.info(f"Issue details - Affected IDs: {issue.affected_ids}")
+    logger.info(f"Issue reasoning: {issue.reasoning}")
 
     try:
         response = critic_client.generate(issue_critic_prompt)
+
+        # Log the evaluation result
+        if response:
+            try:
+                critique_result = robust_json_parse(response, "object")
+                is_valid = critique_result.get("is_valid", "unknown")
+                critique_text = critique_result.get("critique", "No critique provided")
+
+                logger.info(f"Evaluation result - Is Valid: {is_valid}")
+                logger.info(f"Critique: {critique_text}")
+
+                if is_valid is True:
+                    logger.info(f"✅ Issue CONFIRMED as valid quality problem")
+                elif is_valid is False:
+                    logger.info(f"❌ Issue REJECTED as not a real problem")
+                else:
+                    logger.warning(f"⚠️  Issue evaluation result unclear: {is_valid}")
+
+            except Exception as parse_error:
+                logger.warning(f"Could not parse evaluation response: {parse_error}")
+                logger.info(f"Raw evaluation response: {response[:200]}...")
+
         return response
     except Exception as e:
         logger.error(f"Failed to generate critique with {critic_name}: {e}")

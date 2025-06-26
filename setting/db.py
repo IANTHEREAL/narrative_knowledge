@@ -37,7 +37,7 @@ class DatabaseManager:
         self.user_connections: Dict[str, sessionmaker] = {}
         self.local_database_uri = DATABASE_URI
         logger.info(
-            f"DatabaseManager initialized with local database: {self.local_database_uri}"
+            f"DatabaseManager initialized with local database"
         )
 
     def get_session_factory(self, database_uri: Optional[str] = None) -> sessionmaker:
