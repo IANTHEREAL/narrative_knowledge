@@ -4,6 +4,7 @@ import logging
 
 from llm.providers.bedrock import BedrockProvider
 from llm.factory import LLMInterface
+from utils.token import calculate_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,11 @@ def gen_situate_context(llm_client: LLMInterface, doc: str, chunk: str) -> str:
         + "\n\n"
         + CHUNK_CONTEXT_PROMPT.format(chunk_content=chunk)
     )
-    response_stream = llm_client.generate_stream(prompt)
+    token_count = calculate_tokens(prompt)
+    max_tokens = 8192
+    if token_count + 500 > max_tokens:
+        max_tokens = token_count + 500
+    response_stream = llm_client.generate_stream(prompt, max_tokens=max_tokens)
     response = ""
     for chunk in response_stream:
         response += chunk
