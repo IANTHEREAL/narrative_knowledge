@@ -406,7 +406,9 @@ class GraphBuildDaemon:
         extracted_sources = []
         failed_extractions = []
 
-        kb_builder = KnowledgeBuilder(self.llm_client, self.embedding_func, session_factory=session_factory)
+        kb_builder = KnowledgeBuilder(
+            self.llm_client, self.embedding_func, session_factory=session_factory
+        )
 
         for task in task_data:
             try:

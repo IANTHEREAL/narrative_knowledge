@@ -196,14 +196,16 @@ class KnowledgeBuilder:
                 )
                 existing_blocks_list = []
                 for block in existing_blocks:
-                    existing_blocks_list.append({
-                        "id": block.id,
-                        "name": block.name,
-                        "content": block.content,
-                        "context": block.context,
-                        "hash": block.hash,
-                        "attributes": block.attributes,
-                    })
+                    existing_blocks_list.append(
+                        {
+                            "id": block.id,
+                            "name": block.name,
+                            "content": block.content,
+                            "context": block.context,
+                            "hash": block.hash,
+                            "attributes": block.attributes,
+                        }
+                    )
                 return existing_blocks_list
 
             full_content = source_data.effective_content
@@ -257,13 +259,25 @@ class KnowledgeBuilder:
                     self.llm_client, full_content, block.content
                 )
             except Exception as e:
-                logger.error(
-                    f"Failed to generate context for block {block.name}: {e}"
-                )
+                logger.error(f"Failed to generate context for block {block.name}: {e}")
                 section_context[block.name] = None
 
         # Process each knowledge block with hash-based deduplication
         created_blocks = []
+        block_embeddings = {}
+
+        for block in blocks:
+            context = section_context.get(block.name, None)
+            content_str = block.content
+            if context:
+                embedding_input = f"<context>\n{context}</context>\n\n{content_str}"
+            else:
+                embedding_input = content_str
+
+            if self.embedding_func:
+                block_embeddings[block.name] = self.embedding_func(embedding_input)
+            else:
+                block_embeddings[block.name] = None
 
         with self.SessionLocal() as db:
             # Re-fetch source data in this transaction
@@ -274,6 +288,7 @@ class KnowledgeBuilder:
             for block in blocks:
                 context = section_context.get(block.name, None)
                 content_str = block.content
+                block_embedding = block_embeddings.get(block.name, None)
 
                 # Generate hash for knowledge block
                 kb_hash_input = f"{block.name}|{content_str}|{context or ''}"
@@ -290,26 +305,13 @@ class KnowledgeBuilder:
                     logger.info(f"Knowledge block already exists: {block.name}")
                     knowledge_block = existing_kb
                 else:
-                    # Generate embedding based on context + block content
-                    if context:
-                        embedding_input = (
-                            f"<context>\n{context}</context>\n\n{content_str}"
-                        )
-                    else:
-                        embedding_input = content_str
-
-                    # Generate embedding if embedding function is available
-                    content_vec = None
-                    if self.embedding_func:
-                        content_vec = self.embedding_func(embedding_input)
-
                     # Create new knowledge block
                     knowledge_block = KnowledgeBlock(
                         name=block.name,
                         context=context,
                         content=content_str,
                         knowledge_type="paragraph",
-                        content_vec=content_vec,
+                        content_vec=block_embedding,
                         hash=kb_hash,
                         attributes={"position": block.position},
                     )

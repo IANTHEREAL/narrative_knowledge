@@ -14,16 +14,16 @@ def get_parser(path: str, llm_client: LLMInterface):
 def get_parser_by_content_type(content_type: str, llm_client: LLMInterface):
     """
     Get parser by content type/MIME type.
-    
+
     Args:
         content_type: MIME type (e.g., "text/markdown", "text/plain")
         llm_client: LLM interface for processing
-        
+
     Returns:
         Parser instance
     """
     content_type = content_type.lower()
-    
+
     # Handle MIME types and map to appropriate parser
     if content_type in ["text/markdown", "text/x-markdown"]:
         return MarkdownParser(llm_client)
