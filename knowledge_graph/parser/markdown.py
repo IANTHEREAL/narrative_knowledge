@@ -11,6 +11,7 @@ from utils.json_utils import robust_json_parse
 
 logger = logging.getLogger(__name__)
 
+flexible_split_size = 300
 
 class MarkdownParser:
     """
@@ -51,7 +52,7 @@ class MarkdownParser:
     ) -> SourceData:
         # Check if content is small enough to keep as single block
         total_tokens = self._estimate_tokens(markdown_content)
-        if total_tokens <= split_threshold + 300:
+        if total_tokens <= split_threshold + flexible_split_size:
             logger.info(
                 f"[Parser] Content is small ({total_tokens} tokens <= {split_threshold + 300}), keeping as single block."
             )
