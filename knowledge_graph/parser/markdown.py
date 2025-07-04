@@ -69,7 +69,7 @@ class MarkdownParser:
         logger.info(f"[Parser] Phase 1 produced {len(atomic_blocks)} atomic blocks.")
 
         # Phase 2: Thematic Bottom-Up Merging
-        if len(atomic_blocks) == 100000:
+        if len(atomic_blocks) > 1:
             logger.info("[Parser] Starting Phase 2: Thematic Merging")
             try:
                 final_blocks = self._thematic_merge_with_llm(atomic_blocks, max_tokens)
