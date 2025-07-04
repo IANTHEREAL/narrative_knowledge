@@ -234,8 +234,11 @@ Now, apply the thinking process to the provided chunks and generate the final JS
 """
         logger.info("[Thematic Merge] Calling LLM for unified merge and title plan...")
         token_count = calculate_tokens(prompt)
+        max_tokens = 8192
+        if token_count + 500 > max_tokens:
+            max_tokens = token_count + 500
         response_stream = self.llm_client.generate_stream(
-            prompt, max_tokens=token_count + 500
+            prompt, max_tokens=max_tokens
         )
         response = ""
         for chunk in response_stream:
