@@ -257,7 +257,7 @@ class KnowledgeBuilder:
                     self.llm_client, full_content, block.content
                 )
             except Exception as e:
-                logger.warning(
+                logger.error(
                     f"Failed to generate context for block {block.name}: {e}"
                 )
                 section_context[block.name] = None
