@@ -25,24 +25,41 @@ class MarkdownParser:
         name, extension = extract_file_info(path)
         markdown_content = read_file_content(path)
 
-        return self._parse_content_internal(markdown_content, name, max_tokens, split_threshold)
+        return self._parse_content_internal(
+            markdown_content, name, max_tokens, split_threshold
+        )
 
-    def parse_content(self, content: str, name: str, max_tokens=4096, split_threshold=2048) -> SourceData:
+    def parse_content(
+        self, content: str, name: str, max_tokens=4096, split_threshold=2048
+    ) -> SourceData:
         """
         Parse markdown content directly.
-        
+
         Args:
             content: The markdown content to parse
             name: Name for the document
             max_tokens: Maximum tokens per merged block
             split_threshold: Token threshold for splitting blocks
-            
+
         Returns:
             SourceData object with parsed blocks
         """
         return self._parse_content_internal(content, name, max_tokens, split_threshold)
 
-    def _parse_content_internal(self, markdown_content: str, name: str, max_tokens=4096, split_threshold=2048) -> SourceData:
+    def _parse_content_internal(
+        self, markdown_content: str, name: str, max_tokens=4096, split_threshold=2048
+    ) -> SourceData:
+        # Check if content is small enough to keep as single block
+        total_tokens = self._estimate_tokens(markdown_content)
+        if total_tokens <= split_threshold + 300:
+            logger.info(
+                f"[Parser] Content is small ({total_tokens} tokens <= {split_threshold + 300}), keeping as single block."
+            )
+            single_block = Block(name=name, content=markdown_content, position=0)
+            return SourceData(
+                name=name, content=markdown_content, blocks=[single_block]
+            )
+
         # Phase 1: Hierarchical Top-Down Splitting
         logger.info("[Parser] Starting Phase 1: Hierarchical Splitting")
 
