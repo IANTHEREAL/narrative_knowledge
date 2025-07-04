@@ -194,7 +194,17 @@ class KnowledgeBuilder:
                 logger.info(
                     f"Found {len(existing_blocks)} existing knowledge blocks for source {source_id}"
                 )
-                return existing_blocks
+                existing_blocks_list = []
+                for block in existing_blocks:
+                    existing_blocks_list.append({
+                        "id": block.id,
+                        "name": block.name,
+                        "content": block.content,
+                        "context": block.context,
+                        "hash": block.hash,
+                        "attributes": block.attributes,
+                    })
+                return existing_blocks_list
 
             full_content = source_data.effective_content
             # Get full content from source
