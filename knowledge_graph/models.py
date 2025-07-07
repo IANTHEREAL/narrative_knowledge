@@ -53,15 +53,11 @@ class SourceData(Base):
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     name = Column(String(255), nullable=False)
 
-    # New: Reference to deduplicated content
+    # Reference to deduplicated content
     content_hash = Column(
         String(64), ForeignKey("content_store.content_hash"), nullable=True
     )
     link = Column(String(512), nullable=True)
-
-    # Keep original fields for backward compatibility (will be gradually deprecated)
-    content = Column(LONGTEXT, nullable=True)
-    hash = Column(String(64), nullable=True)
 
     source_type = Column(String(50), nullable=False, default="text/plain")
     attributes = Column(JSON, nullable=True)
@@ -79,28 +75,25 @@ class SourceData(Base):
         "SourceGraphMapping", back_populates="source", cascade="all, delete-orphan"
     )
 
-    # Backward compatibility properties
+    # Content access properties
     @property
     def effective_content(self):
-        """Get content from content_store if available, otherwise use local content field"""
+        """Get content from content_store"""
         if self.content_store:
             return self.content_store.content
-        return self.content
+        return None
 
     @property
     def effective_hash(self):
-        """Get hash from content_hash if available, otherwise use local hash field"""
-        return self.content_hash or self.hash
+        """Get content hash from content_hash field"""
+        return self.content_hash
 
     __table_args__ = (
         Index("uq_source_data_link", "link", unique=True),
         Index("idx_source_data_name", "name"),
         Index("idx_source_data_type", "source_type"),
         Index("idx_source_data_content_hash", "content_hash"),
-        Index(
-            "idx_source_data_link_time", "link", "created_at"
-        ),  # Support querying by link and time
-        # Removed uq_source_data_link unique constraint to allow multiple versions per link
+        Index("idx_source_data_link_time", "link", "created_at"),
     )
 
     def __repr__(self):
@@ -333,6 +326,9 @@ class GraphBuildStatus(Base):
     storage_directory = Column(
         String(512), nullable=True
     )  # Directory path where document and metadata are stored
+    doc_link = Column(
+        String(512), nullable=True
+    )  # Document link for easy SourceData lookup
     status = Column(
         Enum("uploaded", "pending", "processing", "completed", "failed"),
         nullable=False,
@@ -357,6 +353,8 @@ class GraphBuildStatus(Base):
         Index("idx_graph_build_status_status", "status"),
         Index("idx_graph_build_status_created", "created_at"),
         Index("idx_graph_build_status_external_db", "external_database_uri"),
+        Index("idx_graph_build_status_doc_link", "doc_link"),
+        Index("idx_graph_build_status_topic_link", "topic_name", "doc_link"),
     )
 
     def __repr__(self):

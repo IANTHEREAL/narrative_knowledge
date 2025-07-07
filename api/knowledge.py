@@ -318,6 +318,7 @@ def _create_processing_task(
                 temp_token_id=temp_token_id,
                 external_database_uri=external_db_uri,
                 storage_directory=str(storage_directory),
+                doc_link=metadata.doc_link,
                 status="uploaded",
             )
             db.add(build_status)

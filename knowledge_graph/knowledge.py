@@ -140,7 +140,6 @@ class KnowledgeBuilder:
 
             source_data = SourceData(
                 name=Path(source_path).stem,
-                content=extracted_content,  # Keep for backward compatibility
                 link=doc_link,
                 source_type=content_type,
                 content_hash=content_store.content_hash,

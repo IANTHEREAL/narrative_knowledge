@@ -125,7 +125,16 @@ def get_source_data_by_ids(db: Session, source_data_ids: list[str]):
 
     sql = text(
         f"""
-        SELECT id, name, content, link, source_type, attributes from source_data where id in :source_data_ids
+        SELECT
+            sd.id,
+            sd.name,
+            cs.content,
+            sd.link,
+            sd.source_type,
+            sd.attributes
+        FROM source_data sd
+        LEFT JOIN content_store cs ON sd.content_hash = cs.content_hash
+        WHERE sd.id IN :source_data_ids
     """
     )
     res = db.execute(sql, {"source_data_ids": valid_ids})
@@ -159,13 +168,15 @@ def get_source_data_by_entity_ids(db: Session, entity_ids: list[str]):
     sql = text(
         f"""
         SELECT 
-            sd.id, 
-            sd.name, 
-            sd.content, 
-            sd.link, 
-            sd.source_type, 
-            sd.attributes
+            sd.id,
+            sd.name,
+            cs.content,
+            sd.link,
+            sd.source_type,
+            sd.attributes,
+            sd.content_hash
         FROM source_data as sd
+        LEFT JOIN content_store cs ON sd.content_hash = cs.content_hash
         INNER JOIN source_graph_mapping as sgm ON sd.id = sgm.source_id
         WHERE sgm.graph_element_type = 'entity' 
         AND sgm.graph_element_id IN :entity_ids
@@ -176,7 +187,11 @@ def get_source_data_by_entity_ids(db: Session, entity_ids: list[str]):
 
     try:
         for row in res.fetchall():
-            content_hash = hashlib.sha256(row.content.encode()).hexdigest()
+            # Use content_hash directly from the database instead of calculating it
+            content_hash = (
+                row.content_hash
+                or hashlib.sha256((row.content or "").encode()).hexdigest()
+            )
             source_data[content_hash] = {
                 "id": row.id,
                 "name": row.name,
@@ -205,13 +220,15 @@ def get_source_data_by_relationship_ids(db: Session, relationship_ids: list[str]
     sql = text(
         f"""
         SELECT 
-            sd.id, 
-            sd.name, 
-            sd.content, 
-            sd.link, 
-            sd.source_type, 
-            sd.attributes
+            sd.id,
+            sd.name,
+            cs.content,
+            sd.link,
+            sd.source_type,
+            sd.attributes,
+            sd.content_hash
         FROM source_data as sd
+        LEFT JOIN content_store cs ON sd.content_hash = cs.content_hash
         INNER JOIN source_graph_mapping as sgm ON sd.id = sgm.source_id
         WHERE sgm.graph_element_type = 'relationship' 
         AND sgm.graph_element_id IN :relationship_ids
@@ -222,7 +239,11 @@ def get_source_data_by_relationship_ids(db: Session, relationship_ids: list[str]
 
     try:
         for row in res.fetchall():
-            content_hash = hashlib.sha256(row.content.encode()).hexdigest()
+            # Use content_hash directly from the database instead of calculating it
+            content_hash = (
+                row.content_hash
+                or hashlib.sha256((row.content or "").encode()).hexdigest()
+            )
             source_data[content_hash] = {
                 "id": row.id,
                 "name": row.name,
