@@ -15,6 +15,7 @@ OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 # DB settings
 DATABASE_URI = os.environ.get("DATABASE_URI")
 SESSION_POOL_SIZE: int = os.environ.get("SESSION_POOL_SIZE", 40)
+MAX_PROMPT_TOKENS = 40960
 
 
 # Model configurations
