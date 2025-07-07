@@ -17,6 +17,7 @@ from setting.db import SessionLocal
 from etl.extract import extract_source_data
 from utils.token import encode_text, decode_tokens
 from llm.factory import LLMInterface
+from setting.base import MAX_PROMPT_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -244,7 +245,7 @@ class KnowledgeBuilder:
         for block in blocks:
             content = block.content
             tokens = encode_text(content)
-            if len(tokens) > 4096:
+            if len(tokens) > MAX_PROMPT_TOKENS:
                 logger.warning(
                     f"Section '{block.name}' has {len(tokens)} tokens, exceeding 4096. Consider restructuring."
                 )
@@ -284,6 +285,9 @@ class KnowledgeBuilder:
                 db.query(SourceData).filter(SourceData.id == source_id).first()
             )
 
+            # PERFORMANCE OPTIMIZATION: Batch process all blocks
+            # Step 1: Pre-compute all hashes and prepare block data
+            hash_to_block_data = {}
             for block in blocks:
                 context = section_context.get(block.name, None)
                 content_str = block.content
@@ -293,68 +297,158 @@ class KnowledgeBuilder:
                 kb_hash_input = f"{block.name}|{content_str}|{context or ''}"
                 kb_hash = hashlib.sha256(kb_hash_input.encode("utf-8")).hexdigest()
 
-                # Check if knowledge block already exists by hash
-                existing_kb = (
+                hash_to_block_data[kb_hash] = {
+                    "block": block,
+                    "context": context,
+                    "content": content_str,
+                    "embedding": block_embedding,
+                    "hash": kb_hash,
+                }
+
+            # Step 2: Batch query for existing knowledge blocks by hash
+            all_hashes = list(hash_to_block_data.keys())
+            existing_kb_query = (
+                db.query(KnowledgeBlock)
+                .filter(KnowledgeBlock.hash.in_(all_hashes))
+                .all()
+            )
+
+            existing_kb_by_hash = {kb.hash: kb for kb in existing_kb_query}
+
+            logger.info(
+                f"Found {len(existing_kb_by_hash)} existing knowledge blocks out of {len(all_hashes)} total"
+            )
+
+            # Step 3: Separate blocks into existing and new ones
+            blocks_to_create = []
+            existing_blocks = []
+
+            for kb_hash, block_data in hash_to_block_data.items():
+                if kb_hash in existing_kb_by_hash:
+                    # Block already exists
+                    existing_kb = existing_kb_by_hash[kb_hash]
+                    existing_blocks.append(existing_kb)
+                    created_blocks.append(
+                        {
+                            "id": existing_kb.id,
+                            "name": existing_kb.name,
+                            "content": existing_kb.content,
+                            "context": existing_kb.context,
+                            "hash": existing_kb.hash,
+                            "attributes": existing_kb.attributes,
+                        }
+                    )
+                else:
+                    # Block needs to be created
+                    blocks_to_create.append(block_data)
+
+            # Step 4: Batch insert new knowledge blocks
+            new_kb_objects = []
+            if blocks_to_create:
+                logger.info(f"Creating {len(blocks_to_create)} new knowledge blocks")
+
+                # Prepare data for bulk insert
+                kb_mappings = []
+                for block_data in blocks_to_create:
+                    kb_mappings.append(
+                        {
+                            "name": block_data["block"].name,
+                            "context": block_data["context"],
+                            "content": block_data["content"],
+                            "knowledge_type": "paragraph",
+                            "content_vec": block_data["embedding"],
+                            "hash": block_data["hash"],
+                            "attributes": {"position": block_data["block"].position},
+                        }
+                    )
+
+                # Use bulk_insert_mappings for better performance
+                db.bulk_insert_mappings(
+                    KnowledgeBlock, kb_mappings, return_defaults=True
+                )
+                db.flush()  # Flush to get IDs
+
+                # Query the newly created blocks to get their IDs
+                new_kb_query = (
                     db.query(KnowledgeBlock)
-                    .filter(KnowledgeBlock.hash == kb_hash)
-                    .first()
-                )
-
-                if existing_kb:
-                    logger.info(f"Knowledge block already exists: {block.name}")
-                    knowledge_block = existing_kb
-                else:
-                    # Create new knowledge block
-                    knowledge_block = KnowledgeBlock(
-                        name=block.name,
-                        context=context,
-                        content=content_str,
-                        knowledge_type="paragraph",
-                        content_vec=block_embedding,
-                        hash=kb_hash,
-                        attributes={"position": block.position},
-                    )
-                    db.add(knowledge_block)
-                    db.flush()  # Flush to get the ID
-                    logger.info(f"Knowledge block created: {block.name}")
-
-                created_blocks.append(
-                    {
-                        "id": knowledge_block.id,
-                        "name": knowledge_block.name,
-                        "content": knowledge_block.content,
-                        "context": knowledge_block.context,
-                        "hash": knowledge_block.hash,
-                        "attributes": knowledge_block.attributes,
-                    }
-                )
-
-                # Always establish mapping between knowledge block and source data
-                existing_mapping = (
-                    db.query(BlockSourceMapping)
                     .filter(
-                        BlockSourceMapping.block_id == knowledge_block.id,
-                        BlockSourceMapping.source_id == source_data.id,
+                        KnowledgeBlock.hash.in_([bd["hash"] for bd in blocks_to_create])
                     )
-                    .first()
+                    .all()
                 )
 
-                if not existing_mapping:
-                    mapping = BlockSourceMapping(
-                        block_id=knowledge_block.id,
-                        source_id=source_data.id,
-                        position_in_source=block.position,
+                new_kb_by_hash = {kb.hash: kb for kb in new_kb_query}
+
+                for block_data in blocks_to_create:
+                    kb = new_kb_by_hash[block_data["hash"]]
+                    new_kb_objects.append(kb)
+                    created_blocks.append(
+                        {
+                            "id": kb.id,
+                            "name": kb.name,
+                            "content": kb.content,
+                            "context": kb.context,
+                            "hash": kb.hash,
+                            "attributes": kb.attributes,
+                        }
                     )
-                    db.add(mapping)
-                    logger.info(
-                        f"Created mapping: knowledge_block({knowledge_block.id}) -> source_data({source_data.id})"
+
+            # Step 5: Batch query existing mappings
+            all_kb_ids = [kb.id for kb in existing_kb_query + new_kb_objects]
+            existing_mappings_query = (
+                db.query(BlockSourceMapping)
+                .filter(
+                    BlockSourceMapping.block_id.in_(all_kb_ids),
+                    BlockSourceMapping.source_id == source_data.id,
+                )
+                .all()
+            )
+
+            existing_mapping_pairs = {
+                (mapping.block_id, mapping.source_id)
+                for mapping in existing_mappings_query
+            }
+
+            # Step 6: Batch insert new mappings
+            mappings_to_create = []
+
+            # Process existing blocks
+            for existing_kb in existing_blocks:
+                if (existing_kb.id, source_data.id) not in existing_mapping_pairs:
+                    # Find the corresponding block position
+                    block_data = hash_to_block_data[existing_kb.hash]
+                    mappings_to_create.append(
+                        {
+                            "block_id": existing_kb.id,
+                            "source_id": source_data.id,
+                            "position_in_source": block_data["block"].position,
+                        }
                     )
-                else:
-                    logger.info(
-                        f"Mapping already exists: knowledge_block({knowledge_block.id}) -> source_data({source_data.id})"
+
+            # Process new blocks
+            for kb in new_kb_objects:
+                if (kb.id, source_data.id) not in existing_mapping_pairs:
+                    # Find the corresponding block position
+                    block_data = hash_to_block_data[kb.hash]
+                    mappings_to_create.append(
+                        {
+                            "block_id": kb.id,
+                            "source_id": source_data.id,
+                            "position_in_source": block_data["block"].position,
+                        }
                     )
+
+            if mappings_to_create:
+                logger.info(
+                    f"Creating {len(mappings_to_create)} new block-source mappings"
+                )
+                db.bulk_insert_mappings(BlockSourceMapping, mappings_to_create)
+            else:
+                logger.info("All block-source mappings already exist")
 
             db.commit()
-            logger.info(f"Processing completed for source {source_id}")
+            logger.info(
+                f"Processing completed for source {source_id}. Created {len(blocks_to_create)} new blocks, reused {len(existing_blocks)} existing blocks"
+            )
 
         return created_blocks

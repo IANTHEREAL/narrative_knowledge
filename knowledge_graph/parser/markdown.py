@@ -8,6 +8,7 @@ from utils.file import read_file_content, extract_file_info
 from llm.factory import LLMInterface
 from utils.token import calculate_tokens
 from utils.json_utils import robust_json_parse
+from setting.base import MAX_PROMPT_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -238,6 +239,10 @@ Now, apply the thinking process to the provided chunks and generate the final JS
         max_tokens = 8192
         if token_count + 500 > max_tokens:
             max_tokens = token_count + 500
+        if max_tokens > MAX_PROMPT_TOKENS:
+            raise ValueError(
+                f"Max tokens is too high: {max_tokens}. Please reduce the max_tokens parameter."
+            )
         response_stream = self.llm_client.generate_stream(prompt, max_tokens=max_tokens)
         response = ""
         for chunk in response_stream:
@@ -339,11 +344,58 @@ Now, apply the thinking process to the provided chunks and generate the final JS
 
         return final_blocks
 
+    def _find_code_block_ranges(self, content: str) -> List[tuple]:
+        """
+        Find all code block ranges (fenced with ``` or ~~~, or indented) in the content.
+        Returns a list of (start_pos, end_pos) tuples indicating character positions of code blocks.
+        """
+        code_ranges = []
+        lines = content.split("\n")
+        current_pos = 0
+        i = 0
+
+        while i < len(lines):
+            line = lines[i]
+            stripped = line.strip()
+
+            # Check for fenced code blocks (``` or ~~~)
+            if stripped.startswith("```") or stripped.startswith("~~~"):
+                fence_type = stripped[:3]
+                start_pos = current_pos
+                i += 1
+                current_pos += len(line) + 1  # +1 for newline
+
+                # Find the closing fence
+                while i < len(lines):
+                    line = lines[i]
+                    if line.strip().startswith(fence_type):
+                        current_pos += len(line) + 1
+                        code_ranges.append((start_pos, current_pos - 1))
+                        break
+                    current_pos += len(line) + 1
+                    i += 1
+            else:
+                current_pos += len(line) + 1
+
+            i += 1
+
+        return code_ranges
+
+    def _is_position_in_code_block(
+        self, position: int, code_ranges: List[tuple]
+    ) -> bool:
+        """Check if a character position falls within any code block range."""
+        for start, end in code_ranges:
+            if start <= position <= end:
+                return True
+        return False
+
     def _split_content_by_heading(
         self, content: str, level: int, preface_threshold: int = 512
     ) -> List[dict]:
         """
         Splits content by a specific heading level using a regex-based approach.
+        Ignores headings that appear inside code blocks.
 
         Returns a list of dictionaries, where each dict has "title" and "content".
         The content *before* the first heading is associated with the first heading block,
@@ -354,17 +406,23 @@ Now, apply the thinking process to the provided chunks and generate the final JS
             level: The heading level to split by (1 for #, 2 for ##, etc.)
             preface_threshold: Token threshold for creating separate preface chunk (default: 1024)
         """
+        # First, identify all code block ranges
+        code_ranges = self._find_code_block_ranges(content)
+
         heading_prefix = "#" * level + " "
-        # This regex splits the text by headings, but keeps the heading line (the delimiter)
-        # as part of the *following* text block, which is exactly what we want.
-        # It looks for a newline character followed by the heading prefix.
-        splitter = re.compile(f"(^({re.escape(heading_prefix)}.*)$)", re.MULTILINE)
 
-        parts = splitter.split(content)
+        # Find all potential heading matches
+        pattern = re.compile(f"^({re.escape(heading_prefix)}.*)$", re.MULTILINE)
+        matches = list(pattern.finditer(content))
 
-        # Corner Case 1: No headings of this level found at all.
-        # The entire content is preface.
-        if len(parts) == 1:
+        # Filter out matches that are inside code blocks
+        valid_matches = []
+        for match in matches:
+            if not self._is_position_in_code_block(match.start(), code_ranges):
+                valid_matches.append(match)
+
+        # If no valid headings found, treat the whole content as one chunk
+        if not valid_matches:
             preface_content = content.strip()
             if not preface_content:
                 return []
@@ -377,22 +435,24 @@ Now, apply the thinking process to the provided chunks and generate the final JS
 
         chunks = []
 
-        # The first part is the content before any headings of this level.
-        preface_content = parts[0].strip()
+        # Content before the first heading
+        first_heading_pos = valid_matches[0].start()
+        preface_content = content[:first_heading_pos].strip()
 
-        # The rest of the parts come in triplets.
-        for i in range(1, len(parts), 3):
-            title_line = parts[i]
+        # Process each heading and its content
+        for i, match in enumerate(valid_matches):
+            title_line = match.group(1)
             title = title_line.lstrip("# ").strip()
 
-            # Corner Case 2: Handle trailing heading that has no content after it.
-            if i + 2 < len(parts):
-                chunk_content = parts[i + 2].strip()
-                full_chunk_content = (title_line + "\n" + chunk_content).strip()
+            # Determine content boundaries
+            content_start = match.start()
+            if i + 1 < len(valid_matches):
+                content_end = valid_matches[i + 1].start()
             else:
-                full_chunk_content = title_line.strip()
+                content_end = len(content)
 
-            chunks.append({"title": title, "content": full_chunk_content})
+            chunk_content = content[content_start:content_end].strip()
+            chunks.append({"title": title, "content": chunk_content})
 
         # Handle preface content based on its size
         if preface_content and chunks:
@@ -421,11 +481,20 @@ Now, apply the thinking process to the provided chunks and generate the final JS
         return chunks
 
     def _has_lower_level_headings(self, content: str, current_level: int) -> bool:
-        """Checks if the content contains any headings of a lower level."""
+        """Checks if the content contains any headings of a lower level (excluding code blocks)."""
+        # First, identify all code block ranges
+        code_ranges = self._find_code_block_ranges(content)
+
         # Pattern to match headings with more '#' symbols than current_level
         # e.g., if current_level is 2 (##), it looks for ###, ####, etc.
         pattern = re.compile(f"^#{'{'}{current_level + 1},{'}'} .*", re.MULTILINE)
-        return bool(pattern.search(content))
+
+        # Check if any matches are outside code blocks
+        for match in pattern.finditer(content):
+            if not self._is_position_in_code_block(match.start(), code_ranges):
+                return True
+
+        return False
 
     def _estimate_tokens(self, text: str) -> int:
         """Simple token estimation: roughly 4 characters per token"""

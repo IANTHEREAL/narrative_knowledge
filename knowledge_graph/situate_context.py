@@ -32,9 +32,13 @@ def gen_situate_context(llm_client: LLMInterface, doc: str, chunk: str) -> str:
         + CHUNK_CONTEXT_PROMPT.format(chunk_content=chunk)
     )
     token_count = calculate_tokens(prompt)
+    if token_count > 40960:
+        logger.warning(f"Chunk is too long to situate: {token_count} tokens")
+        return None
     max_tokens = 8192
     if token_count + 500 > max_tokens:
         max_tokens = token_count + 500
+
     response_stream = llm_client.generate_stream(prompt, max_tokens=max_tokens)
     response = ""
     for chunk in response_stream:
