@@ -265,7 +265,7 @@ class AnalysisBlueprint(Base):
 
     # All blueprint data stored as JSON for maximum flexibility
     processing_items = Column(
-        JSON, nullable=False
+        JSON, nullable=True
     )  # canonical_entities, key_patterns, global_timeline, etc.
     processing_instructions = Column(
         Text, nullable=True
