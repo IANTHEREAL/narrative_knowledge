@@ -13,7 +13,7 @@ from memory_system import PersonalMemorySystem
 from api.models import APIResponse
 from llm.factory import LLMInterface
 from llm.embedding import get_text_embedding
-from setting.db import SessionLocal
+from setting.db import db_manager
 from setting.base import LLM_MODEL, LLM_PROVIDER
 
 logger = logging.getLogger(__name__)
@@ -59,7 +59,7 @@ def _get_memory_system() -> PersonalMemorySystem:
     return PersonalMemorySystem(
         llm_client=llm_client,
         embedding_func=get_text_embedding,
-        session_factory=SessionLocal,
+        session_factory=db_manager.get_session_factory(),
     )
 
 

@@ -9,17 +9,13 @@ from sqlalchemy import func, and_, text
 from knowledge_graph.models import (
     SourceData,
     KnowledgeBlock,
-    Entity,
-    Relationship,
     AnalysisBlueprint,
-    SourceGraphMapping,
     BlockSourceMapping,
     ContentStore,
 )
 from knowledge_graph.knowledge import KnowledgeBuilder
 from knowledge_graph.graph import NarrativeKnowledgeGraphBuilder
-from utils.json_utils import robust_json_parse
-from setting.db import SessionLocal
+from setting.db import db_manager
 from llm.factory import LLMInterface
 from llm.embedding import get_text_embedding
 
@@ -138,7 +134,7 @@ class PersonalMemorySystem:
         """
         self.llm_client = llm_client
         self.embedding_func = embedding_func or get_text_embedding
-        self.SessionLocal = session_factory or SessionLocal
+        self.SessionLocal = session_factory or db_manager.get_session_factory()
         self.knowledge_builder = KnowledgeBuilder(
             llm_client, embedding_func, session_factory
         )
