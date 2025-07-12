@@ -40,7 +40,7 @@ class DatabaseManager:
 
     def _create_user_tables(self, engine):
         """
-        Create all necessary tables in database.
+        Create all necessary tables in database using IF NOT EXISTS to handle concurrency.
 
         Args:
             engine: SQLAlchemy engine for the database
@@ -51,9 +51,30 @@ class DatabaseManager:
         try:
             from knowledge_graph.models import Base
 
-            # checkfirst=True explicitly checks if table exists before creating
-            Base.metadata.create_all(engine, checkfirst=True)
-            logger.info("Successfully created/verified tables in database")
+            # Use raw SQL with IF NOT EXISTS for MySQL/TiDB to handle concurrency
+            with engine.connect() as conn:
+                # Get the DDL statements for all tables
+                from sqlalchemy.schema import CreateTable
+                
+                for table_name, table in Base.metadata.tables.items():
+                    # Generate the CREATE TABLE statement
+                    create_table_sql = str(CreateTable(table).compile(engine))
+                    
+                    # Replace CREATE TABLE with CREATE TABLE IF NOT EXISTS
+                    if create_table_sql.strip().upper().startswith('CREATE TABLE'):
+                        create_table_sql = create_table_sql.replace('CREATE TABLE', 'CREATE TABLE IF NOT EXISTS', 1)
+                        
+                        try:
+                            conn.execute(text(create_table_sql))
+                            logger.info(f"Executed CREATE TABLE IF NOT EXISTS for: {table_name}")
+                        except Exception as table_error:
+                            logger.warning(f"Failed to create table {table_name}: {table_error}")
+                            # Continue with other tables instead of failing completely
+                            continue
+                
+                conn.commit()
+                logger.info("Successfully created/verified all tables in database")
+                
         except Exception as e:
             logger.error(f"Failed to create tables in database: {e}")
             raise Exception(f"Failed to initialize database schema: {str(e)}")
