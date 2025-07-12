@@ -582,7 +582,6 @@ Generate a concise narrative summary that captures the essence of this conversat
         memory_types: List[str] = None,
         time_range: Optional[Dict] = None,
         top_k: int = 10,
-        similarity_threshold: float = 0.3,
     ) -> Dict[str, Any]:
         """
         Retrieve user memory based on query.
@@ -593,7 +592,6 @@ Generate a concise narrative summary that captures the essence of this conversat
             memory_types: Types to search ["conversation", "insights"]
             time_range: Time range filter
             top_k: Number of results to return
-            similarity_threshold: Minimum similarity score for vector search (0-1)
 
         Returns:
             Dict with retrieved memory results
@@ -608,14 +606,14 @@ Generate a concise narrative summary that captures the essence of this conversat
         # Search conversation summaries
         if "conversation" in memory_types:
             conversations = self._search_conversation_summaries(
-                query, user_id, topic_name, time_range, top_k, similarity_threshold
+                query, user_id, topic_name, time_range, top_k
             )
             results["conversations"] = conversations
 
         # Search user insights
         if "insights" in memory_types:
             insights = self._search_user_insights(
-                query, user_id, topic_name, time_range, top_k, similarity_threshold
+                query, user_id, topic_name, time_range, top_k
             )
             results["insights"] = insights
 
@@ -634,7 +632,6 @@ Generate a concise narrative summary that captures the essence of this conversat
         topic_name: str,
         time_range: Optional[Dict],
         top_k: int,
-        similarity_threshold: float = 0.3,
     ) -> List[Dict[str, Any]]:
         """Search conversation summaries using vector similarity."""
 
@@ -689,22 +686,21 @@ Generate a concise narrative summary that captures the essence of this conversat
                 results = []
                 for row in rows:
                     similarity_score = round(1 - row.similarity_distance, 4)
-                    if similarity_score >= similarity_threshold:
-                        results.append(
-                            {
-                                "id": row.id,
-                                "name": row.name,
-                                "content": row.content,
-                                "context": row.context,
-                                "created_at": (
-                                    row.created_at.isoformat()
-                                    if row.created_at
-                                    else None
-                                ),
-                                "attributes": row.attributes,
-                                "similarity_score": similarity_score,
-                            }
-                        )
+                    results.append(
+                        {
+                            "id": row.id,
+                            "name": row.name,
+                            "content": row.content,
+                            "context": row.context,
+                            "created_at": (
+                                row.created_at.isoformat()
+                                if row.created_at
+                                else None
+                            ),
+                            "attributes": row.attributes,
+                            "similarity_score": similarity_score,
+                        }
+                    )
 
                 # Sort by similarity score and return top k
                 results.sort(key=lambda x: x["similarity_score"], reverse=True)
@@ -722,7 +718,6 @@ Generate a concise narrative summary that captures the essence of this conversat
         topic_name: str,
         time_range: Optional[Dict],
         top_k: int,
-        similarity_threshold: float = 0.3,
     ) -> List[Dict[str, Any]]:
         """Search user insights using vector similarity on relationship triplets."""
 
@@ -783,34 +778,33 @@ Generate a concise narrative summary that captures the essence of this conversat
                 results = []
                 for row in rows:
                     similarity_score = round(1 - row.similarity_distance, 4)
-                    if similarity_score >= similarity_threshold:
-                        results.append(
-                            {
-                                "id": row.id,
-                                "name": f"{row.source_entity_name} -> {row.target_entity_name}",
-                                "description": f"{row.source_entity_name} {row.relationship_desc} {row.target_entity_name}",
-                                "source_entity": {
-                                    "id": row.source_entity_id,
-                                    "name": row.source_entity_name,
-                                    "description": row.source_entity_description,
-                                    "attributes": row.source_entity_attributes,
-                                },
-                                "target_entity": {
-                                    "id": row.target_entity_id,
-                                    "name": row.target_entity_name,
-                                    "description": row.target_entity_description,
-                                    "attributes": row.target_entity_attributes,
-                                },
-                                "relationship_desc": row.relationship_desc,
-                                "created_at": (
-                                    row.created_at.isoformat()
-                                    if row.created_at
-                                    else None
-                                ),
-                                "attributes": row.attributes,
-                                "similarity_score": similarity_score,
-                            }
-                        )
+                    results.append(
+                        {
+                            "id": row.id,
+                            "name": f"{row.source_entity_name} -> {row.target_entity_name}",
+                            "description": f"{row.source_entity_name} {row.relationship_desc} {row.target_entity_name}",
+                            "source_entity": {
+                                "id": row.source_entity_id,
+                                "name": row.source_entity_name,
+                                "description": row.source_entity_description,
+                                "attributes": row.source_entity_attributes,
+                            },
+                            "target_entity": {
+                                "id": row.target_entity_id,
+                                "name": row.target_entity_name,
+                                "description": row.target_entity_description,
+                                "attributes": row.target_entity_attributes,
+                            },
+                            "relationship_desc": row.relationship_desc,
+                            "created_at": (
+                                row.created_at.isoformat()
+                                if row.created_at
+                                else None
+                            ),
+                            "attributes": row.attributes,
+                            "similarity_score": similarity_score,
+                        }
+                    )
 
                 # Sort by similarity score and return top k
                 results.sort(key=lambda x: x["similarity_score"], reverse=True)
