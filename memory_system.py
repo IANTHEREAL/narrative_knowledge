@@ -647,7 +647,6 @@ Generate a concise narrative summary that captures the essence of this conversat
                 time_conditions = []
                 params = {
                     "query_vector": str(query_embedding),
-                    "user_id": user_id,
                     "topic_name": topic_name,
                     "knowledge_type": "chat_summary",
                     "top_k": top_k * 3,  # Fetch more initially for filtering
@@ -675,8 +674,7 @@ Generate a concise narrative summary that captures the essence of this conversat
                         VEC_COSINE_DISTANCE(kb.content_vec, :query_vector) as similarity_distance,
                         (1 - VEC_COSINE_DISTANCE(kb.content_vec, :query_vector)) as similarity_score
                     FROM knowledge_blocks kb
-                    WHERE JSON_EXTRACT(kb.attributes, '$.user_id') = :user_id
-                      AND JSON_EXTRACT(kb.attributes, '$.topic_name') = :topic_name
+                    WHERE JSON_EXTRACT(kb.attributes, '$.topic_name') = :topic_name
                       AND kb.knowledge_type = :knowledge_type
                       AND kb.content_vec IS NOT NULL
                       {time_filter_sql}
@@ -726,7 +724,7 @@ Generate a concise narrative summary that captures the essence of this conversat
         top_k: int,
         similarity_threshold: float = 0.3,
     ) -> List[Dict[str, Any]]:
-        """Search user insights using vector similarity."""
+        """Search user insights using vector similarity on relationship triplets."""
 
         try:
             # Generate query embedding
@@ -737,37 +735,42 @@ Generate a concise narrative summary that captures the essence of this conversat
                 time_conditions = []
                 params = {
                     "query_vector": str(query_embedding),
-                    "user_id": user_id,
                     "topic_name": topic_name,
-                    "entity_type": "UserInsight",
                     "top_k": top_k * 3,  # Fetch more initially for filtering
                 }
 
                 if time_range:
                     if time_range.get("start"):
-                        time_conditions.append("AND e.created_at >= :start_time")
+                        time_conditions.append("AND r.created_at >= :start_time")
                         params["start_time"] = time_range["start"]
                     if time_range.get("end"):
-                        time_conditions.append("AND e.created_at <= :end_time")
+                        time_conditions.append("AND r.created_at <= :end_time")
                         params["end_time"] = time_range["end"]
 
                 time_filter_sql = " ".join(time_conditions)
 
-                # Vector similarity search query
+                # Vector similarity search query for relationship triplets
                 base_query = f"""
                     SELECT 
-                        e.id,
-                        e.name,
-                        e.description,
-                        e.attributes,
-                        e.created_at,
-                        VEC_COSINE_DISTANCE(e.description_vec, :query_vector) as similarity_distance,
-                        (1 - VEC_COSINE_DISTANCE(e.description_vec, :query_vector)) as similarity_score
-                    FROM entities e
-                    WHERE JSON_EXTRACT(e.attributes, '$.user_id') = :user_id
-                      AND JSON_EXTRACT(e.attributes, '$.topic_name') = :topic_name
-                      AND JSON_EXTRACT(e.attributes, '$.entity_type') = :entity_type
-                      AND e.description_vec IS NOT NULL
+                        r.id,
+                        e1.id as source_entity_id,
+                        e1.name as source_entity_name,
+                        e1.description as source_entity_description,
+                        e1.attributes as source_entity_attributes,
+                        r.relationship_desc,
+                        e2.id as target_entity_id,
+                        e2.name as target_entity_name,
+                        e2.description as target_entity_description,
+                        e2.attributes as target_entity_attributes,
+                        r.attributes,
+                        r.created_at,
+                        VEC_COSINE_DISTANCE(r.relationship_desc_vec, :query_vector) as similarity_distance,
+                        (1 - VEC_COSINE_DISTANCE(r.relationship_desc_vec, :query_vector)) as similarity_score
+                    FROM relationships r
+                    JOIN entities e1 ON r.source_entity_id = e1.id
+                    JOIN entities e2 ON r.target_entity_id = e2.id
+                    WHERE JSON_EXTRACT(r.attributes, '$.topic_name') = :topic_name
+                      AND r.relationship_desc_vec IS NOT NULL
                       {time_filter_sql}
                     ORDER BY similarity_distance ASC 
                     LIMIT :top_k
@@ -784,8 +787,21 @@ Generate a concise narrative summary that captures the essence of this conversat
                         results.append(
                             {
                                 "id": row.id,
-                                "name": row.name,
-                                "description": row.description,
+                                "name": f"{row.source_entity_name} -> {row.target_entity_name}",
+                                "description": f"{row.source_entity_name} {row.relationship_desc} {row.target_entity_name}",
+                                "source_entity": {
+                                    "id": row.source_entity_id,
+                                    "name": row.source_entity_name,
+                                    "description": row.source_entity_description,
+                                    "attributes": row.source_entity_attributes,
+                                },
+                                "target_entity": {
+                                    "id": row.target_entity_id,
+                                    "name": row.target_entity_name,
+                                    "description": row.target_entity_description,
+                                    "attributes": row.target_entity_attributes,
+                                },
+                                "relationship_desc": row.relationship_desc,
                                 "created_at": (
                                     row.created_at.isoformat()
                                     if row.created_at
