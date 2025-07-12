@@ -24,7 +24,6 @@ engine = create_engine(
 
 Base = declarative_base()
 
-
 class DatabaseManager:
     """
     Manages database connections for multi-database support.
@@ -158,3 +157,4 @@ class DatabaseManager:
 
 # Global database manager instance
 db_manager = DatabaseManager()
+SessionLocal = db_manager.get_session_factory()
