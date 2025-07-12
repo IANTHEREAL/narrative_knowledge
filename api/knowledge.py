@@ -22,7 +22,7 @@ from api.models import (
 )
 from knowledge_graph.models import (
     SourceData,
-    GraphBuildStatus,
+    GraphBuild,
 )
 
 logger = logging.getLogger(__name__)
@@ -48,9 +48,9 @@ def log_sql_query(query, query_name="SQL Query"):
         logger.debug(f"SQL compile error: {e}")
 
 
-def _generate_temp_token_id(doc_link: str, external_database_uri: str = "") -> str:
+def _generate_build_id(doc_link: str, external_database_uri: str = "") -> str:
     """
-    Generate a deterministic temp_token_id based on doc_link and external_database_uri.
+    Generate a deterministic build_id based on doc_link and external_database_uri.
 
     Args:
         doc_link: The document link
@@ -131,7 +131,7 @@ def _save_file_and_metadata(
     file: UploadFile,
     metadata: DocumentMetadata,
     base_dir: Path,
-    temp_token_id: str = None,
+    build_id: str = None,
 ) -> None:
     """
     Helper function to save file and metadata to directory.
@@ -140,7 +140,7 @@ def _save_file_and_metadata(
         file: The uploaded file to save
         metadata: Document metadata
         base_dir: Directory to save files to
-        temp_token_id: Optional temp token ID to save in metadata
+        build_id: Optional temp token ID to save in metadata
     """
     # Create directory
     base_dir.mkdir(parents=True, exist_ok=True)
@@ -155,8 +155,8 @@ def _save_file_and_metadata(
     metadata_file = base_dir / "document_metadata.json"
     metadata_dict = metadata.dict()
     metadata_dict["file_name"] = file.filename
-    if temp_token_id:
-        metadata_dict["temp_token_id"] = temp_token_id
+    if build_id:
+        metadata_dict["build_id"] = build_id
 
     with open(metadata_file, "w", encoding="utf-8") as f:
         json.dump(metadata_dict, f, indent=2, ensure_ascii=False)
@@ -192,23 +192,23 @@ def _save_uploaded_file_with_metadata(
         base_name = Path(filename).stem
         base_dir = UPLOAD_DIR / metadata.topic_name / base_name
 
-        # Generate temp_token_id based on doc_link and database_uri
+        # Generate build_id based on doc_link and database_uri
         external_db_uri = (
             ""
             if db_manager.is_local_mode(metadata.database_uri)
             else metadata.database_uri
         )
-        temp_token_id = _generate_temp_token_id(metadata.doc_link, external_db_uri)
+        build_id = _generate_build_id(metadata.doc_link, external_db_uri)
 
-        # Check if GraphBuildStatus already exists for this temp_token_id
-        # This is sufficient since temp_token_id uniquely identifies doc_link + database_uri
+        # Check if GraphBuild already exists for this build_id
+        # This is sufficient since build_id uniquely identifies doc_link + database_uri
         with SessionLocal() as db:
             existing_build_status = (
-                db.query(GraphBuildStatus)
+                db.query(GraphBuild)
                 .filter(
-                    GraphBuildStatus.temp_token_id == temp_token_id,
-                    GraphBuildStatus.topic_name == metadata.topic_name,
-                    GraphBuildStatus.external_database_uri == external_db_uri,
+                    GraphBuild.build_id == build_id,
+                    GraphBuild.topic_name == metadata.topic_name,
+                    GraphBuild.external_database_uri == external_db_uri,
                 )
                 .first()
             )
@@ -218,13 +218,13 @@ def _save_uploaded_file_with_metadata(
                 if not base_dir.exists():
                     # Create versioned directory if base doesn't exist
                     base_dir = _get_versioned_directory(base_dir)
-                    _save_file_and_metadata(file, metadata, base_dir, temp_token_id)
+                    _save_file_and_metadata(file, metadata, base_dir, build_id)
 
                 logger.info(
-                    f"Found existing document with temp_token_id: {temp_token_id}, "
+                    f"Found existing document with build_id: {build_id}, "
                     f"storage_directory: {existing_build_status.storage_directory}"
                 )
-                return base_dir, temp_token_id
+                return base_dir, build_id
             # If no existing source in database, check file system for existing metadata
             # Check all possible versioned directories sequentially
             base_name = base_dir.name
@@ -256,11 +256,11 @@ def _save_uploaded_file_with_metadata(
                             and existing_metadata.get("database_uri")
                             == metadata.database_uri
                         ):
-                            # Found matching metadata in file system, check for existing temp_token_id
-                            existing_temp_token = existing_metadata.get("temp_token_id")
-                            if existing_temp_token == temp_token_id:
+                            # Found matching metadata in file system, check for existing build_id
+                            existing_temp_token = existing_metadata.get("build_id")
+                            if existing_temp_token == build_id:
                                 logger.info(
-                                    f"Found existing metadata file with matching temp_token_id: {existing_temp_token} in directory: {check_dir}"
+                                    f"Found existing metadata file with matching build_id: {existing_temp_token} in directory: {check_dir}"
                                 )
                                 return check_dir, existing_temp_token
                     except json.JSONDecodeError:
@@ -270,11 +270,11 @@ def _save_uploaded_file_with_metadata(
 
             # New source - create directory and save
             base_dir = _get_versioned_directory(base_dir)
-            _save_file_and_metadata(file, metadata, base_dir, temp_token_id)
+            _save_file_and_metadata(file, metadata, base_dir, build_id)
             logger.info(
-                f"File and metadata saved successfully: {base_dir} with hash-based temp_token_id: {temp_token_id}"
+                f"File and metadata saved successfully: {base_dir} with hash-based build_id: {build_id}"
             )
-            return base_dir, temp_token_id
+            return base_dir, build_id
 
     except HTTPException:
         raise
@@ -287,18 +287,18 @@ def _save_uploaded_file_with_metadata(
 
 
 def _create_processing_task(
-    storage_directory: Path, metadata: DocumentMetadata, temp_token_id: str
+    storage_directory: Path, metadata: DocumentMetadata, build_id: str
 ) -> None:
     """
     Create a background processing task for uploaded document.
 
-    This function creates a GraphBuildStatus record that will be picked up
+    This function creates a GraphBuild record that will be picked up
     by the GraphBuildDaemon for asynchronous processing.
 
     Args:
         storage_directory: Path to directory containing file and metadata
         metadata: Document metadata
-        temp_token_id: Pre-generated unique identifier for the document
+        build_id: Pre-generated unique identifier for the document
 
     Raises:
         HTTPException: If task creation fails
@@ -313,9 +313,9 @@ def _create_processing_task(
         )
 
         with SessionLocal() as db:
-            build_status = GraphBuildStatus(
+            build_status = GraphBuild(
                 topic_name=metadata.topic_name,
-                temp_token_id=temp_token_id,
+                build_id=build_id,
                 external_database_uri=external_db_uri,
                 storage_directory=str(storage_directory),
                 doc_link=metadata.doc_link,
@@ -326,11 +326,11 @@ def _create_processing_task(
 
         if db_manager.is_local_mode(metadata.database_uri):
             logger.info(
-                f"Created local knowledge graph task: {temp_token_id} in {storage_directory}"
+                f"Created local knowledge graph task: {build_id} in {storage_directory}"
             )
         else:
             logger.info(
-                f"Created external-db knowledge graph task: {temp_token_id} in {storage_directory}"
+                f"Created external-db knowledge graph task: {build_id} in {storage_directory}"
             )
 
         return
@@ -482,22 +482,22 @@ async def upload_documents(
             )
 
             # Save file with metadata and check for duplicates
-            storage_directory, temp_token_id = _save_uploaded_file_with_metadata(
+            storage_directory, build_id = _save_uploaded_file_with_metadata(
                 file, file_metadata
             )
 
-            # check whether GraphBuildStatus exists for this temp_token_id, topic_name, database_uri
+            # check whether GraphBuild exists for this build_id, topic_name, database_uri
             is_existing = False  # Initialize the variable
             external_db_uri = (
                 "" if db_manager.is_local_mode(database_uri) else database_uri or ""
             )
             with SessionLocal() as db:
                 build_status = (
-                    db.query(GraphBuildStatus)
+                    db.query(GraphBuild)
                     .filter(
-                        GraphBuildStatus.temp_token_id == temp_token_id,
-                        GraphBuildStatus.topic_name == topic_name,
-                        GraphBuildStatus.external_database_uri == external_db_uri,
+                        GraphBuild.build_id == build_id,
+                        GraphBuild.topic_name == topic_name,
+                        GraphBuild.external_database_uri == external_db_uri,
                     )
                     .first()
                 )
@@ -507,7 +507,7 @@ async def upload_documents(
             if is_existing:
                 # File with same metadata already exists
                 processed_doc = ProcessedDocument(
-                    id=temp_token_id,
+                    id=build_id,
                     name=file.filename or "unknown",
                     file_path=str(storage_directory),
                     doc_link=link,
@@ -518,10 +518,10 @@ async def upload_documents(
                     f"File with identical metadata already exists: {file.filename}"
                 )
             else:
-                _create_processing_task(storage_directory, file_metadata, temp_token_id)
+                _create_processing_task(storage_directory, file_metadata, build_id)
 
                 processed_doc = ProcessedDocument(
-                    id=temp_token_id,
+                    id=build_id,
                     name=file.filename or "unknown",
                     file_path=str(storage_directory),
                     doc_link=link,
@@ -529,7 +529,7 @@ async def upload_documents(
                     status="uploaded",
                 )
                 logger.info(
-                    f"Created processing task for document: {file.filename} with ID: {temp_token_id}"
+                    f"Created processing task for document: {file.filename} with ID: {build_id}"
                 )
 
             processed_documents.append(processed_doc)
@@ -626,11 +626,11 @@ async def trigger_processing(
         with SessionLocal() as db:
             # Find uploaded documents for this topic
             # Build the query
-            query = db.query(GraphBuildStatus).filter(
+            query = db.query(GraphBuild).filter(
                 and_(
-                    GraphBuildStatus.topic_name == topic_name,
-                    GraphBuildStatus.status == "uploaded",
-                    GraphBuildStatus.external_database_uri == external_db_uri,
+                    GraphBuild.topic_name == topic_name,
+                    GraphBuild.status == "uploaded",
+                    GraphBuild.external_database_uri == external_db_uri,
                 )
             )
 
@@ -646,12 +646,12 @@ async def trigger_processing(
 
             # Update status to pending
             triggered_count = (
-                db.query(GraphBuildStatus)
+                db.query(GraphBuild)
                 .filter(
                     and_(
-                        GraphBuildStatus.topic_name == topic_name,
-                        GraphBuildStatus.status == "uploaded",
-                        GraphBuildStatus.external_database_uri == external_db_uri,
+                        GraphBuild.topic_name == topic_name,
+                        GraphBuild.status == "uploaded",
+                        GraphBuild.external_database_uri == external_db_uri,
                     )
                 )
                 .update(
@@ -712,35 +712,35 @@ async def list_topics(
         with SessionLocal() as db:
             # Query topics with their status counts, filtered by database_uri if provided
             query = db.query(
-                GraphBuildStatus.topic_name,
-                GraphBuildStatus.external_database_uri,
-                func.count(GraphBuildStatus.temp_token_id).label("total_documents"),
+                GraphBuild.topic_name,
+                GraphBuild.external_database_uri,
+                func.count(GraphBuild.build_id).label("total_documents"),
                 func.sum(
-                    case((GraphBuildStatus.status == "pending", 1), else_=0)
+                    case((GraphBuild.status == "pending", 1), else_=0)
                 ).label("pending_count"),
                 func.sum(
-                    case((GraphBuildStatus.status == "uploaded", 1), else_=0)
+                    case((GraphBuild.status == "uploaded", 1), else_=0)
                 ).label("uploaded_count"),
                 func.sum(
-                    case((GraphBuildStatus.status == "processing", 1), else_=0)
+                    case((GraphBuild.status == "processing", 1), else_=0)
                 ).label("processing_count"),
                 func.sum(
-                    case((GraphBuildStatus.status == "completed", 1), else_=0)
+                    case((GraphBuild.status == "completed", 1), else_=0)
                 ).label("completed_count"),
-                func.sum(case((GraphBuildStatus.status == "failed", 1), else_=0)).label(
+                func.sum(case((GraphBuild.status == "failed", 1), else_=0)).label(
                     "failed_count"
                 ),
-                func.max(GraphBuildStatus.updated_at).label("latest_update"),
+                func.max(GraphBuild.updated_at).label("latest_update"),
             )
 
             # Filter by database_uri if provided
             if database_uri is not None:
                 query = query.filter(
-                    GraphBuildStatus.external_database_uri == database_uri
+                    GraphBuild.external_database_uri == database_uri
                 )
 
             topic_stats = query.group_by(
-                GraphBuildStatus.topic_name, GraphBuildStatus.external_database_uri
+                GraphBuild.topic_name, GraphBuild.external_database_uri
             ).all()
 
             # Build topic summaries

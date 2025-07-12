@@ -6,7 +6,7 @@ from typing import Dict, Any, List
 from knowledge_graph.models import (
     SourceData,
     ContentStore,
-    GraphBuildStatus,
+    GraphBuild,
     KnowledgeBlock,
     BlockSourceMapping,
 )

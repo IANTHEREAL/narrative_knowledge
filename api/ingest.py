@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 
 from api.models import APIResponse, DocumentMetadata, ProcessedDocument
 from api.memory import _get_memory_system
-from knowledge_graph.models import GraphBuildStatus
+from knowledge_graph.models import GraphBuild
 from setting.db import SessionLocal, db_manager
 
 # Functions imported from api.knowledge for reuse
@@ -55,7 +55,7 @@ async def _process_file_for_knowledge_graph(
         custom_metadata=custom_metadata,
     )
 
-    storage_directory, temp_token_id = _save_uploaded_file_with_metadata(
+    storage_directory, build_id = _save_uploaded_file_with_metadata(
         file, file_metadata
     )
 
@@ -65,11 +65,11 @@ async def _process_file_for_knowledge_graph(
     )
     with SessionLocal() as db:
         build_status = (
-            db.query(GraphBuildStatus)
+            db.query(GraphBuild)
             .filter(
-                GraphBuildStatus.temp_token_id == temp_token_id,
-                GraphBuildStatus.topic_name == topic_name,
-                GraphBuildStatus.external_database_uri == external_db_uri,
+                GraphBuild.build_id == build_id,
+                GraphBuild.topic_name == topic_name,
+                GraphBuild.external_database_uri == external_db_uri,
             )
             .first()
         )
@@ -79,11 +79,11 @@ async def _process_file_for_knowledge_graph(
     if is_existing:
         status_msg = "already_exists"
     else:
-        _create_processing_task(storage_directory, file_metadata, temp_token_id)
+        _create_processing_task(storage_directory, file_metadata, build_id)
         status_msg = "uploaded"
 
     processed_doc = ProcessedDocument(
-        id=temp_token_id,
+        id=build_id,
         name=file.filename or "unknown",
         file_path=str(storage_directory),
         doc_link=link,

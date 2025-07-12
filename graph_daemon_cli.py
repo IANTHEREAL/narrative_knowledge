@@ -104,16 +104,16 @@ def show_status(args):
     # Show detailed pending tasks
     if status["pending_tasks"] > 0:
         from setting.db import SessionLocal
-        from knowledge_graph.models import GraphBuildStatus
+        from knowledge_graph.models import GraphBuild
 
         print("DETAILED PENDING TASKS:")
         print("-" * 30)
 
         with SessionLocal() as db:
             pending_tasks = (
-                db.query(GraphBuildStatus)
-                .filter(GraphBuildStatus.status == "pending")
-                .order_by(GraphBuildStatus.scheduled_at.asc())
+                db.query(GraphBuild)
+                .filter(GraphBuild.status == "pending")
+                .order_by(GraphBuild.scheduled_at.asc())
                 .all()
             )
 
@@ -128,16 +128,16 @@ def show_status(args):
     # Show recent failed tasks if requested or if there are failed tasks
     if args.show_failed or status["failed_tasks"] > 0:
         from setting.db import SessionLocal
-        from knowledge_graph.models import GraphBuildStatus
+        from knowledge_graph.models import GraphBuild
 
         print("RECENT FAILED TASKS:")
         print("-" * 30)
 
         with SessionLocal() as db:
             failed_tasks = (
-                db.query(GraphBuildStatus)
-                .filter(GraphBuildStatus.status == "failed")
-                .order_by(GraphBuildStatus.updated_at.desc())
+                db.query(GraphBuild)
+                .filter(GraphBuild.status == "failed")
+                .order_by(GraphBuild.updated_at.desc())
                 .limit(args.failed_limit if hasattr(args, "failed_limit") else 5)
                 .all()
             )

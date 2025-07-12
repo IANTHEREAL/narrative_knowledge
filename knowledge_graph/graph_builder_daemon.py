@@ -12,7 +12,7 @@ from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from setting.db import SessionLocal, db_manager
-from knowledge_graph.models import GraphBuildStatus, SourceData
+from knowledge_graph.models import GraphBuild, SourceData
 from knowledge_graph.graph_builder import KnowledgeGraphBuilder
 from knowledge_graph.knowledge import KnowledgeBuilder
 from llm.factory import LLMInterface
@@ -77,9 +77,9 @@ class GraphBuildDaemon:
         topic_name = task_info["topic_name"]
         external_database_uri = task_info["external_database_uri"]
         task_data = task_info["task_data"]
-        temp_token_ids = [task["temp_token_id"] for task in task_data]
+        build_ids = [task["build_id"] for task in task_data]
         logger.info(
-            f"Processing earliest topic: {topic_name} with {len(temp_token_ids)} sources (database: {'external' if external_database_uri else 'local'})"
+            f"Processing earliest topic: {topic_name} with {len(build_ids)} sources (database: {'external' if external_database_uri else 'local'})"
         )
         self._process_task(task_info, external_database_uri)
 
@@ -113,10 +113,10 @@ class GraphBuildDaemon:
                 for task in topic_tasks:
                     if not task.storage_directory:
                         logger.error(
-                            f"Task {task.temp_token_id} has no storage directory, marking as failed"
+                            f"Task {task.build_id} has no storage directory, marking as failed"
                         )
                         raise Exception(
-                            f"Task {task.temp_token_id} has no storage directory {task.storage_directory}"
+                            f"Task {task.build_id} has no storage directory {task.storage_directory}"
                         )
 
                     # Verify storage directory exists and contains required files
@@ -154,7 +154,7 @@ class GraphBuildDaemon:
 
                     task_data.append(
                         {
-                            "temp_token_id": task.temp_token_id,
+                            "build_id": task.build_id,
                             "storage_directory": str(storage_path),
                             "document_file": str(doc_file),
                             "metadata": metadata,
@@ -166,20 +166,20 @@ class GraphBuildDaemon:
                     return None
 
                 # Update remaining valid tasks to processing status
-                valid_temp_token_ids = [task["temp_token_id"] for task in task_data]
+                valid_build_ids = [task["build_id"] for task in task_data]
                 self._update_task_status(
                     db,
                     topic_name,
-                    valid_temp_token_ids,
+                    valid_build_ids,
                     external_database_uri,
                     "processing",
                 )
             except Exception as e:
                 logger.error(f"Error in _prepare_task_build: {e}", exc_info=True)
-                valid_temp_token_ids = [task.temp_token_id for task in topic_tasks]
+                valid_build_ids = [task.build_id for task in topic_tasks]
                 self._update_final_status(
                     topic_name,
-                    valid_temp_token_ids,
+                    valid_build_ids,
                     external_database_uri,
                     "failed",
                     str(e),
@@ -192,7 +192,7 @@ class GraphBuildDaemon:
                 "task_data": task_data,
             }
 
-    def _get_earliest_pending_task(self, db: Session) -> Optional[GraphBuildStatus]:
+    def _get_earliest_pending_task(self, db: Session) -> Optional[GraphBuild]:
         """
         Get the earliest pending task across all databases.
 
@@ -200,12 +200,12 @@ class GraphBuildDaemon:
             db: Database session
 
         Returns:
-            Earliest pending GraphBuildStatus record, or None if no pending tasks
+            Earliest pending GraphBuild record, or None if no pending tasks
         """
         earliest_task = (
-            db.query(GraphBuildStatus)
-            .filter(GraphBuildStatus.status == "pending")
-            .order_by(GraphBuildStatus.scheduled_at.asc())
+            db.query(GraphBuild)
+            .filter(GraphBuild.status == "pending")
+            .order_by(GraphBuild.scheduled_at.asc())
             .first()
         )
 
@@ -213,7 +213,7 @@ class GraphBuildDaemon:
 
     def _get_pending_tasks_for_topic_and_db(
         self, db: Session, topic_name: str, external_database_uri: str
-    ) -> List[GraphBuildStatus]:
+    ) -> List[GraphBuild]:
         """
         Get all pending tasks for a specific topic and database combination.
 
@@ -223,18 +223,18 @@ class GraphBuildDaemon:
             external_database_uri: External database URI
 
         Returns:
-            List of pending GraphBuildStatus records for the topic and database
+            List of pending GraphBuild records for the topic and database
         """
         return (
-            db.query(GraphBuildStatus)
+            db.query(GraphBuild)
             .filter(
                 and_(
-                    GraphBuildStatus.status == "pending",
-                    GraphBuildStatus.topic_name == topic_name,
-                    GraphBuildStatus.external_database_uri == external_database_uri,
+                    GraphBuild.status == "pending",
+                    GraphBuild.topic_name == topic_name,
+                    GraphBuild.external_database_uri == external_database_uri,
                 )
             )
-            .order_by(GraphBuildStatus.scheduled_at.asc())
+            .order_by(GraphBuild.scheduled_at.asc())
             .all()
         )
 
@@ -242,7 +242,7 @@ class GraphBuildDaemon:
         self,
         db: Session,
         topic_name: str,
-        temp_token_ids: List[str],
+        build_ids: List[str],
         external_database_uri: str,
         status: str,
         error_message: Optional[str] = None,
@@ -253,7 +253,7 @@ class GraphBuildDaemon:
         Args:
             db: Database session
             topic_name: Name of the topic
-            temp_token_ids: List of temp token IDs to update
+            build_ids: List of temp token IDs to update
             external_database_uri: External database URI
             status: New status to set
             error_message: Error message if status is 'failed'
@@ -264,17 +264,17 @@ class GraphBuildDaemon:
             if error_message:
                 update_data["error_message"] = error_message
 
-            db.query(GraphBuildStatus).filter(
+            db.query(GraphBuild).filter(
                 and_(
-                    GraphBuildStatus.topic_name == topic_name,
-                    GraphBuildStatus.temp_token_id.in_(temp_token_ids),
-                    GraphBuildStatus.external_database_uri == external_database_uri,
+                    GraphBuild.topic_name == topic_name,
+                    GraphBuild.build_id.in_(build_ids),
+                    GraphBuild.external_database_uri == external_database_uri,
                 )
             ).update(update_data, synchronize_session=False)
 
             db.commit()
             logger.info(
-                f"Updated {len(temp_token_ids)} local database tasks to status: {status}"
+                f"Updated {len(build_ids)} local database tasks to status: {status}"
             )
 
         except Exception as e:
@@ -287,7 +287,7 @@ class GraphBuildDaemon:
     def _update_final_status(
         self,
         topic_name: str,
-        temp_token_ids: List[str],
+        build_ids: List[str],
         external_database_uri: str,
         status: str,
         error_message: Optional[str] = None,
@@ -298,7 +298,7 @@ class GraphBuildDaemon:
 
         Args:
             topic_name: Name of the topic
-            temp_token_ids: List of temp token IDs to update
+            build_ids: List of temp token IDs to update
             external_database_uri: External database URI (for filtering)
             status: New status to set
             error_message: Error message if status is 'failed'
@@ -311,17 +311,17 @@ class GraphBuildDaemon:
                 if error_message:
                     update_data["error_message"] = error_message
 
-                db.query(GraphBuildStatus).filter(
+                db.query(GraphBuild).filter(
                     and_(
-                        GraphBuildStatus.topic_name == topic_name,
-                        GraphBuildStatus.temp_token_id.in_(temp_token_ids),
-                        GraphBuildStatus.external_database_uri == external_database_uri,
+                        GraphBuild.topic_name == topic_name,
+                        GraphBuild.build_id.in_(build_ids),
+                        GraphBuild.external_database_uri == external_database_uri,
                     )
                 ).update(update_data, synchronize_session=False)
 
                 db.commit()
                 logger.info(
-                    f"Updated {len(temp_token_ids)} tasks to final status: {status} (topic: {topic_name})"
+                    f"Updated {len(build_ids)} tasks to final status: {status} (topic: {topic_name})"
                 )
 
         except Exception as e:
@@ -337,32 +337,32 @@ class GraphBuildDaemon:
         """
         with SessionLocal() as db:
             uploaded_count = (
-                db.query(GraphBuildStatus)
-                .filter(GraphBuildStatus.status == "uploaded")
+                db.query(GraphBuild)
+                .filter(GraphBuild.status == "uploaded")
                 .count()
             )
 
             pending_count = (
-                db.query(GraphBuildStatus)
-                .filter(GraphBuildStatus.status == "pending")
+                db.query(GraphBuild)
+                .filter(GraphBuild.status == "pending")
                 .count()
             )
 
             processing_count = (
-                db.query(GraphBuildStatus)
-                .filter(GraphBuildStatus.status == "processing")
+                db.query(GraphBuild)
+                .filter(GraphBuild.status == "processing")
                 .count()
             )
 
             completed_count = (
-                db.query(GraphBuildStatus)
-                .filter(GraphBuildStatus.status == "completed")
+                db.query(GraphBuild)
+                .filter(GraphBuild.status == "completed")
                 .count()
             )
 
             failed_count = (
-                db.query(GraphBuildStatus)
-                .filter(GraphBuildStatus.status == "failed")
+                db.query(GraphBuild)
+                .filter(GraphBuild.status == "failed")
                 .count()
             )
 
@@ -432,16 +432,16 @@ class GraphBuildDaemon:
                     error_msg = f"Knowledge extraction failed: {result.get('error', 'Unknown error')}"
                     logger.error(error_msg)
                     failed_extractions.append(
-                        {"temp_token_id": task["temp_token_id"], "error": error_msg}
+                        {"build_id": task["build_id"], "error": error_msg}
                     )
                     continue
 
-                # Add to successful extractions using the consistent temp_token_id
+                # Add to successful extractions using the consistent build_id
                 extracted_sources.append(
                     {
-                        "temp_token_id": task[
-                            "temp_token_id"
-                        ],  # Keep temp_token_id for status update
+                        "build_id": task[
+                            "build_id"
+                        ],  # Keep build_id for status update
                         "source_id": result["source_id"],
                         "source_name": result["source_name"],
                         "source_content": result["source_content"],
@@ -451,14 +451,14 @@ class GraphBuildDaemon:
                 )
 
                 logger.info(
-                    f"Successfully extracted knowledge from {task['document_file']} with temp_token_id: {task['temp_token_id']}"
+                    f"Successfully extracted knowledge from {task['document_file']} with build_id: {task['build_id']}"
                 )
 
             except Exception as e:
                 error_msg = f"Failed to extract knowledge from {task['document_file']}: {str(e)}"
                 logger.error(error_msg, exc_info=True)
                 failed_extractions.append(
-                    {"temp_token_id": task["temp_token_id"], "error": error_msg}
+                    {"build_id": task["build_id"], "error": error_msg}
                 )
 
         # Handle failed extractions
@@ -485,13 +485,13 @@ class GraphBuildDaemon:
             result = graph_builder.build_knowledge_graph(topic_name, extracted_sources)
 
             # Update successful tasks to completed status
-            # Use the consistent temp_token_ids from successful extractions
-            completed_temp_token_ids = [
-                source["temp_token_id"] for source in extracted_sources
+            # Use the consistent build_ids from successful extractions
+            completed_build_ids = [
+                source["build_id"] for source in extracted_sources
             ]
 
             self._update_final_status(
-                topic_name, completed_temp_token_ids, external_database_uri, "completed"
+                topic_name, completed_build_ids, external_database_uri, "completed"
             )
 
             logger.info(
@@ -503,12 +503,12 @@ class GraphBuildDaemon:
             error_msg = f"Graph building failed: {str(e)}"
             logger.error(error_msg, exc_info=True)
 
-            failed_temp_token_ids = [
-                source["temp_token_id"] for source in extracted_sources
+            failed_build_ids = [
+                source["build_id"] for source in extracted_sources
             ]
             self._update_final_status(
                 topic_name,
-                failed_temp_token_ids,
+                failed_build_ids,
                 external_database_uri,
                 "failed",
                 error_msg,

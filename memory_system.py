@@ -12,6 +12,7 @@ from knowledge_graph.models import (
     AnalysisBlueprint,
     BlockSourceMapping,
     ContentStore,
+    GraphBuild,
 )
 from knowledge_graph.knowledge import KnowledgeBuilder
 from knowledge_graph.graph import NarrativeKnowledgeGraphBuilder
@@ -107,6 +108,25 @@ def generate_topic_name_for_personal_memory(user_id: str) -> str:
     return f"The personal information of {user_id}"
 
 
+def _generate_build_id_for_chat_batch(chat_link: str, database_uri: str = "") -> str:
+    """
+    Generate a deterministic build_id for chat batch based on chat_link and database_uri.
+
+    Args:
+        chat_link: The chat batch link
+        database_uri: The database URI (empty string for local)
+
+    Returns:
+        SHA256 hash of the combined string
+    """
+    # Combine chat_link and database_uri for hash generation
+    combined_string = f"{chat_link}||{database_uri}"
+    
+    # Generate SHA256 hash
+    hash_object = hashlib.sha256(combined_string.encode("utf-8"))
+    return hash_object.hexdigest()
+
+
 class PersonalMemorySystem:
     """
     Personal Memory System for managing user chat history and generating insights.
@@ -146,6 +166,7 @@ class PersonalMemorySystem:
         self,
         chat_messages: List[Dict],
         user_id: str,
+        database_uri: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Process a batch of chat messages into summarized knowledge.
@@ -160,6 +181,7 @@ class PersonalMemorySystem:
                     "role": "user" | "assistant"
                 }
             user_id: User identifier
+            database_uri: Database URI for storing graph data (optional, uses local if not provided)
 
         Returns:
             Dict with processing results
@@ -182,10 +204,16 @@ class PersonalMemorySystem:
         # Step 3: create personal blueprint
         self.create_personal_blueprint(user_id, topic_name)
 
+        # Step 4: Create GraphBuild record for background processing
+        build_id = self._create_graph_build_task(
+            source_data, user_id, topic_name, database_uri
+        )
+
         return {
             "status": "success",
             "source_id": source_data["id"],
             "knowledge_block_id": knowledge_block["id"],
+            "build_id": build_id,
             "summary": knowledge_block["content"],
             "topic_name": topic_name,
         }
@@ -299,7 +327,7 @@ class PersonalMemorySystem:
 
     def _create_summary_knowledge_block(
         self, source_data: Dict, user_id: str, topic_name: str
-    ) -> Tuple[KnowledgeBlock, str]:
+    ) -> Dict[str, Any]:
         """
         Create a summary knowledge block for the chat batch.
 
@@ -309,7 +337,7 @@ class PersonalMemorySystem:
             topic_name: Topic name
 
         Returns:
-            A tuple containing the created KnowledgeBlock object.
+            Dict containing the created KnowledgeBlock information.
         """
         with self.SessionLocal() as db:
             # Check if a knowledge block already exists for this source
@@ -329,7 +357,12 @@ class PersonalMemorySystem:
                     logger.info(
                         f"Summary knowledge block already exists for source {source_data.id}, reusing block {existing_block.id}"
                     )
-                    return existing_block
+                    return {
+                        "id": existing_block.id,
+                        "name": existing_block.name,
+                        "content": existing_block.content,
+                        "attributes": existing_block.attributes,
+                    }
 
         # Create summary content for knowledge block
         summary_prompt = f"""Generate a narrative summary of this conversation following these guidelines:
@@ -376,8 +409,11 @@ Generate a concise narrative summary that captures the essence of this conversat
 """
         try:
             response = self.llm_client.generate(summary_prompt, max_tokens=4096)
-            # remove <think> and </think> section
-            summary_content = response.split("</think>")[1]
+            # remove <think> and </think> section if present
+            if "</think>" in response:
+                summary_content = response.split("</think>")[1]
+            else:
+                summary_content = response
         except Exception as e:
             logger.error(f"Error generating conversation summary: {e}")
             raise
@@ -391,6 +427,7 @@ Generate a concise narrative summary that captures the essence of this conversat
             knowledge_block = KnowledgeBlock(
                 name=f"Chat Summary - {user_id} - {source_data['attributes'].get('conversation_title', 'unknown')} at {source_data['attributes'].get('last_message_date', 'unknown')}",
                 knowledge_type="chat_summary",
+                context=source_data["content"],
                 content=summary_content,
                 content_vec=self.embedding_func(summary_content),
                 hash=content_hash,
@@ -457,6 +494,86 @@ Generate a concise narrative summary that captures the essence of this conversat
             db.refresh(blueprint)
             logger.info(f"Created personal memory blueprint for user {user_id}")
             return blueprint
+
+    def _create_graph_build_task(
+        self,
+        source_data: Dict,
+        user_id: str,
+        topic_name: str
+    ) -> str:
+        """
+        Create a background processing task for chat batch.
+
+        This function creates a GraphBuild record that will be picked up
+        by the GraphBuildDaemon for asynchronous graph processing.
+
+        Args:
+            source_data: Source data object containing chat batch info
+            user_id: User identifier
+            topic_name: Topic name for memory categorization
+            database_uri: Database URI for storing graph data (optional)
+
+        Returns:
+            Generated build_id for the task
+
+        Raises:
+            Exception: If task creation fails
+        """
+        try:
+            # Generate build_id for chat batch using the actual source link
+            # The source_data contains the actual chat_link used to store the batch
+            with self.SessionLocal() as db:
+                source_record = db.query(SourceData).filter(SourceData.id == source_data["id"]).first()
+                if not source_record:
+                    raise Exception(f"Source data not found with id: {source_data['id']}")
+                
+                chat_batch_link = source_record.link
+            # Use empty string for external_db_uri for local mode
+            external_db_uri = ""
+            build_id = _generate_build_id_for_chat_batch(
+                chat_batch_link, external_db_uri
+            )
+
+            # Create task record in local database only
+            # All task scheduling is centralized in local database
+            with self.SessionLocal() as db:
+                # Check if GraphBuild already exists for this build_id
+                existing_build_status = (
+                    db.query(GraphBuild)
+                    .filter(
+                        GraphBuild.build_id == build_id,
+                        GraphBuild.topic_name == topic_name,
+                        GraphBuild.external_database_uri == external_db_uri,
+                    )
+                    .first()
+                )
+
+                if existing_build_status:
+                    logger.info(
+                        f"Graph build task already exists for build_id: {build_id}"
+                    )
+                    return build_id
+
+                # Create new GraphBuild record
+                build_status = GraphBuild(
+                    topic_name=topic_name,
+                    build_id=build_id,
+                    external_database_uri=external_db_uri,
+                    storage_directory=f"memory://{user_id}/chat_batch/",  # Virtual storage for memory
+                    doc_link=chat_batch_link,
+                    status="uploaded",
+                )
+                db.add(build_status)
+                db.commit()
+
+                logger.info(
+                    f"Created graph build task for chat batch: {build_id} (user: {user_id})"
+                )
+                return build_id
+
+        except Exception as e:
+            logger.error(f"Failed to create graph build task for chat batch: {e}")
+            raise
 
     def retrieve_user_memory(
         self,
@@ -532,7 +649,7 @@ Generate a concise narrative summary that captures the essence of this conversat
                     "query_vector": str(query_embedding),
                     "user_id": user_id,
                     "topic_name": topic_name,
-                    "block_type": "chat_summary",
+                    "knowledge_type": "chat_summary",
                     "top_k": top_k * 3,  # Fetch more initially for filtering
                 }
 
@@ -560,7 +677,7 @@ Generate a concise narrative summary that captures the essence of this conversat
                     FROM knowledge_blocks kb
                     WHERE JSON_EXTRACT(kb.attributes, '$.user_id') = :user_id
                       AND JSON_EXTRACT(kb.attributes, '$.topic_name') = :topic_name
-                      AND JSON_EXTRACT(kb.attributes, '$.block_type') = :block_type
+                      AND kb.knowledge_type = :knowledge_type
                       AND kb.content_vec IS NOT NULL
                       {time_filter_sql}
                     ORDER BY similarity_distance ASC 
