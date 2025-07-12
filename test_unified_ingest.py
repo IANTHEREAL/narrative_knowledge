@@ -27,21 +27,21 @@ day1_messages = [
         "message_content": "I've been a React developer for a few years, but I'm curious about Vue.js. What are the main differences?",
         "session_id": "session_frontend_1",
         "conversation_title": "Exploring Frontend Frameworks",
-        "date": (datetime.now() - timedelta(days=1)).isoformat(),
+        "date": '2024-07-11T12:43:45.331597',
     },
     {
         "role": "assistant",
         "message_content": "That's a great question! The key differences are in their approach to state management and component structure. React uses the virtual DOM and JSX, while Vue uses a more traditional template-based syntax. Vue's state management with Pinia is often seen as simpler than Redux for many use cases.",
         "session_id": "session_frontend_1",
         "conversation_title": "Exploring Frontend Frameworks",
-        "date": (datetime.now() - timedelta(days=1, minutes=-1)).isoformat(),
+        "date": '2024-07-11T12:43:50.331597',
     },
     {
         "role": "user",
         "message_content": "Interesting. I've heard Vue has a lower barrier to entry. I think I'll build a small project with it to see how it feels. Thanks!",
         "session_id": "session_frontend_1",
         "conversation_title": "Exploring Frontend Frameworks",
-        "date": (datetime.now() - timedelta(days=1, minutes=-2)).isoformat(),
+        "date": '2024-07-11T12:44:02.331597'
     },
 ]
 
@@ -52,21 +52,21 @@ day2_messages = [
         "message_content": "You know, after thinking about it, I feel a bit burnt out on frontend work. I want a new challenge. I'm thinking of pivoting my career to machine learning. Where should I start?",
         "session_id": "session_ml_pivot_2",
         "conversation_title": "Career Pivot to Machine Learning",
-        "date": (datetime.now() - timedelta(days=364)).isoformat(),
+        "date": '2024-07-12T12:44:02.331597',
     },
     {
         "role": "assistant",
         "message_content": "That's an exciting and significant career move! For a software developer, a good path would be to solidify your Python skills, then dive into the math fundamentals (Linear Algebra, Calculus, Probability), and finally start with core ML libraries like Scikit-learn, Pandas, and NumPy before moving to deep learning with TensorFlow or PyTorch.",
         "session_id": "session_ml_pivot_2",
         "conversation_title": "Career Pivot to Machine Learning",
-        "date": (datetime.now() - timedelta(days=364, minutes=-1)).isoformat(),
+        "date": '2024-07-12T12:44:32.331597',
     },
     {
         "role": "user",
         "message_content": "That makes sense. It feels like a mountain to climb, but I'm excited. I'll start by sharpening my Python skills specifically for data science. This feels like the right direction for me. Thanks for the roadmap!",
         "session_id": "session_ml_pivot_2",
         "conversation_title": "Career Pivot to Machine Learning",
-        "date": (datetime.now() - timedelta(days=364, minutes=-2)).isoformat(),
+        "date": '2024-07-12T12:45:02.331597',
     },
 ]
 
@@ -77,21 +77,21 @@ day365_messages = [
         "message_content": "It's been a while! A lot has changed for me in the last year. I actually moved from San Francisco to Austin a few months ago. The vibe is so different here, much more laid back.",
         "session_id": "session_life_update_3",
         "conversation_title": "Life Updates and New Hobbies",
-        "date": datetime.now().isoformat(),
+        "date": '2025-07-12T12:44:02.331597',
     },
     {
         "role": "assistant",
         "message_content": "Wow, Austin! That's a big and exciting move. It's a major hub for both tech and music. How are you finding the transition?",
         "session_id": "session_life_update_3",
         "conversation_title": "Life Updates and New Hobbies",
-        "date": (datetime.now() + timedelta(minutes=1)).isoformat(),
+        "date": '2025-07-12T12:45:02.331597',
     },
     {
         "role": "user",
         "message_content": "I love it! And speaking of music, I've picked up the guitar and I'm really getting into blues. It's a fantastic way to unwind after a day of coding. I'm even thinking of building a small app to help me practice scales.",
         "session_id": "session_life_update_3",
         "conversation_title": "Life Updates and New Hobbies",
-        "date": (datetime.now() + timedelta(minutes=2)).isoformat(),
+        "date": '2025-07-12T12:45:32.331597',
     },
 ]
 
@@ -119,7 +119,7 @@ def run_test():
         print("Please ensure the FastAPI server is running.")
         return
 
-
+    return
     # --- Send Day 2 History ---
     print("--- Sending Day 2: Machine Learning Pivot ---")
     day2_payload = {

@@ -169,7 +169,17 @@ class KnowledgeBlock(Base):
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     name = Column(String(512), nullable=False)
     knowledge_type = Column(
-        Enum("qa", "paragraph", "synopsis", "image", "video", "code"), nullable=False
+        Enum(
+            "qa",
+            "paragraph",
+            "synopsis",
+            "image",
+            "video",
+            "code",
+            "chat_summary",
+            "chat_content",
+        ),
+        nullable=False,
     )
     content = Column(LONGTEXT, nullable=True)
     context = Column(Text, nullable=True)
