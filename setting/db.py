@@ -22,8 +22,6 @@ engine = create_engine(
     echo=False,
 )
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
 Base = declarative_base()
 
 
@@ -39,6 +37,7 @@ class DatabaseManager:
         logger.info(f"DatabaseManager initialized with local database")
         # Initialize local database with the same logic as external databases
         self._create_user_tables(engine)
+        self.user_connections[DATABASE_URI] = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
     def _create_user_tables(self, engine):
         """
@@ -53,7 +52,8 @@ class DatabaseManager:
         try:
             from knowledge_graph.models import Base
 
-            Base.metadata.create_all(engine)
+            # checkfirst=True explicitly checks if table exists before creating
+            Base.metadata.create_all(engine, checkfirst=True)
             logger.info("Successfully created/verified tables in database")
         except Exception as e:
             logger.error(f"Failed to create tables in database: {e}")
@@ -74,7 +74,7 @@ class DatabaseManager:
         """
         if self.is_local_mode(database_uri):
             logger.debug("Using local database session factory")
-            return SessionLocal
+            return self.user_connections[self.local_database_uri]
 
         # Multi-database mode
         if database_uri not in self.user_connections:
