@@ -166,7 +166,6 @@ class PersonalMemorySystem:
         self,
         chat_messages: List[Dict],
         user_id: str,
-        database_uri: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Process a batch of chat messages into summarized knowledge.
@@ -181,7 +180,6 @@ class PersonalMemorySystem:
                     "role": "user" | "assistant"
                 }
             user_id: User identifier
-            database_uri: Database URI for storing graph data (optional, uses local if not provided)
 
         Returns:
             Dict with processing results
@@ -206,7 +204,7 @@ class PersonalMemorySystem:
 
         # Step 4: Create GraphBuild record for background processing
         build_id = self._create_graph_build_task(
-            source_data, user_id, topic_name, database_uri
+            source_data, user_id, topic_name
         )
 
         return {
@@ -511,7 +509,6 @@ Generate a concise narrative summary that captures the essence of this conversat
             source_data: Source data object containing chat batch info
             user_id: User identifier
             topic_name: Topic name for memory categorization
-            database_uri: Database URI for storing graph data (optional)
 
         Returns:
             Generated build_id for the task
