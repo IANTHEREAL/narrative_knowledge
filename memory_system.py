@@ -244,7 +244,12 @@ class PersonalMemorySystem:
                 logger.info(
                     f"Chat batch already exists with link: {chat_link}, reusing: {existing_source.id}"
                 )
-                return existing_source
+                return {
+                    "id": existing_source.id,
+                    "name": existing_source.name,
+                    "content": existing_source.effective_content,
+                    "attributes": existing_source.attributes,
+                }
 
             # Check if content already exists
             content_store = (
