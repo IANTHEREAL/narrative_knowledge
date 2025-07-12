@@ -582,7 +582,7 @@ Generate a concise narrative summary that captures the essence of this conversat
         memory_types: List[str] = None,
         time_range: Optional[Dict] = None,
         top_k: int = 10,
-        similarity_threshold: float = 0.4,
+        similarity_threshold: float = 0.3,
     ) -> Dict[str, Any]:
         """
         Retrieve user memory based on query.
@@ -634,7 +634,7 @@ Generate a concise narrative summary that captures the essence of this conversat
         topic_name: str,
         time_range: Optional[Dict],
         top_k: int,
-        similarity_threshold: float = 0.4,
+        similarity_threshold: float = 0.3,
     ) -> List[Dict[str, Any]]:
         """Search conversation summaries using vector similarity."""
 
@@ -724,7 +724,7 @@ Generate a concise narrative summary that captures the essence of this conversat
         topic_name: str,
         time_range: Optional[Dict],
         top_k: int,
-        similarity_threshold: float = 0.4,
+        similarity_threshold: float = 0.3,
     ) -> List[Dict[str, Any]]:
         """Search user insights using vector similarity."""
 
