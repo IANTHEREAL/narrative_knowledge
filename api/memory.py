@@ -4,7 +4,6 @@ Memory API endpoints for personal chat history.
 
 import logging
 from typing import List, Optional, Dict, Any
-from datetime import datetime
 from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -19,24 +18,6 @@ from setting.base import LLM_MODEL, LLM_PROVIDER
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/memory", tags=["memory"])
-
-
-class ChatMessage(BaseModel):
-    """Chat message model."""
-
-    message_content: str
-    session_id: str
-    conversation_title: str
-    date: str = Field(..., description="ISO format datetime string")
-    role: str = Field(..., description="user or assistant")
-
-
-class MemoryStoreRequest(BaseModel):
-    """Request model for storing memory."""
-
-    chat_messages: List[ChatMessage]
-    user_id: str
-    force_reprocess: bool = Field(False, description="Force reprocessing existing data")
 
 
 class MemoryRetrieveRequest(BaseModel):
@@ -61,133 +42,6 @@ def _get_memory_system() -> PersonalMemorySystem:
         embedding_func=get_text_embedding,
         session_factory=db_manager.get_session_factory(),
     )
-
-
-@router.post("/store", response_model=APIResponse)
-async def store_memory(request: MemoryStoreRequest) -> JSONResponse:
-    """
-    Store batch chat messages as personal memory.
-
-    ## Overview
-    This endpoint processes chat message batches into a comprehensive personal memory system that includes:
-
-    1. **Conversation Summaries** - Stored as structured knowledge blocks
-    2. **Personal Analysis Blueprints** - Automatically evolving user profiles
-    3. **User Insights** - Graph-based personal knowledge extraction
-
-    ## Processing Pipeline
-
-    The system automatically:
-    - Analyzes conversation content to generate comprehensive summaries
-    - Maintains personal analysis blueprints that evolve with user interactions
-    - Extracts insights about user interests, knowledge domains, and behavioral patterns
-    - Handles deduplication and conflict resolution for overlapping insights
-    - Stores everything in a searchable vector database for future retrieval
-
-    ## Input Format
-
-    **Chat Messages** should include:
-    - `message_content`: The actual message text
-    - `session_id`: Unique identifier for the chat session
-    - `conversation_title`: Title/topic of the conversation
-    - `date`: ISO format timestamp
-    - `role`: Either "user" or "assistant"
-
-    ## Response Data
-
-    Returns processing results including:
-    - `source_id`: Database ID of the stored conversation data
-    - `knowledge_block_id`: ID of the created summary knowledge block
-    - `summary`: Generated conversation summary with facets and insights
-    - `insights_generated`: Number of personal insights extracted
-    - `blueprint_updated`: Timestamp of personal analysis blueprint update
-
-    ## Example Request
-
-    ```json
-    {
-        "chat_messages": [
-            {
-                "message_content": "How do I implement async/await in Python?",
-                "session_id": "session_123",
-                "conversation_title": "Learning Python Async Programming",
-                "date": "2024-01-15T10:30:00Z",
-                "role": "user"
-            },
-            {
-                "message_content": "Here's how to use async/await in Python...",
-                "session_id": "session_123",
-                "conversation_title": "Learning Python Async Programming",
-                "date": "2024-01-15T10:31:00Z",
-                "role": "assistant"
-            }
-        ],
-        "user_id": "user_456",
-        "force_reprocess": false
-    }
-    ```
-
-    ## Example Response
-
-    ```json
-    {
-        "status": "success",
-        "message": "Successfully processed 2 messages and generated 3 insights",
-        "data": {
-            "status": "success",
-            "source_id": "source_789",
-            "knowledge_block_id": "kb_101112",
-            "summary": {
-                "main_summary": "User learning Python async programming concepts",
-                "user_queries": ["How to implement async/await"],
-                "topics_discussed": ["async programming", "Python"],
-                "facets": ["syntax", "best practices"],
-                "user_interests": ["backend development"],
-                "knowledge_domains": ["programming", "Python"],
-                "key_outcomes": ["learned async/await syntax"]
-            },
-            "insights_generated": 3,
-            "blueprint_updated": "2024-01-15T10:32:00Z"
-        }
-    }
-    ```
-
-    Args:
-        request: Memory store request with chat messages and user info
-
-    Returns:
-        JSON response with storage results and insights generated
-
-    Raises:
-        HTTPException: If processing fails
-    """
-    try:
-        memory_system = _get_memory_system()
-
-        # Convert Pydantic models to dicts
-        chat_messages = [msg.dict() for msg in request.chat_messages]
-
-        # Process the chat batch
-        result = memory_system.process_chat_batch(
-            chat_messages=chat_messages, user_id=request.user_id
-        )
-
-        response = APIResponse(
-            status="success",
-            message=f"Successfully processed {len(chat_messages)} messages and generated {result['insights_generated']} insights",
-            data=result,
-        )
-
-        return JSONResponse(status_code=status.HTTP_200_OK, content=response.dict())
-
-    except Exception as e:
-        logger.error(
-            f"Error storing memory for user {request.user_id}: {e}", exc_info=True
-        )
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to store memory: {str(e)}",
-        )
 
 
 @router.post("/retrieve", response_model=APIResponse)

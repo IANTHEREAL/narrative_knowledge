@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, inspect as sqlalchemy_inspect
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from setting.base import DATABASE_URI, SESSION_POOL_SIZE
@@ -39,6 +39,35 @@ class DatabaseManager:
         logger.info(
             f"DatabaseManager initialized with local database"
         )
+        self._initialize_local_database()
+
+    def _initialize_local_database(self):
+        """
+        Checks if tables exist in the local database and creates them if they don't.
+        This ensures the application can start without manual database setup.
+        """
+        try:
+            logger.info("Inspecting local database schema...")
+            # Import models here to ensure Base.metadata is populated for the check.
+            from knowledge_graph.models import Base as KnowledgeBase
+
+            inspector = sqlalchemy_inspect(engine)
+            existing_tables = inspector.get_table_names()
+
+            expected_tables = KnowledgeBase.metadata.tables.keys()
+            missing_tables = set(expected_tables) - set(existing_tables)
+
+            if not missing_tables:
+                logger.info("Local database schema is up to date.")
+                return
+
+            logger.warning(f"Missing tables in local database: {', '.join(missing_tables)}. Creating them...")
+            KnowledgeBase.metadata.create_all(bind=engine)
+            logger.info("Successfully created missing tables in the local database.")
+
+        except Exception as e:
+            logger.critical(f"CRITICAL: Failed to initialize local database: {e}", exc_info=True)
+            raise  # Re-raise the exception to prevent the application from starting in a bad state.
 
     def get_session_factory(self, database_uri: Optional[str] = None) -> sessionmaker:
         """
