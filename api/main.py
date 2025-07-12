@@ -8,6 +8,8 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.knowledge import router as knowledge_router
+from api.memory import router as memory_router
+from api.ingest import router as ingest_router
 
 # Configure logging
 logging.basicConfig(
@@ -36,6 +38,8 @@ app.add_middleware(
 
 # Include routers
 app.include_router(knowledge_router)
+app.include_router(memory_router)
+app.include_router(ingest_router)
 
 
 @app.exception_handler(HTTPException)

@@ -430,7 +430,7 @@ Return a JSON array of enhanced triplets (surround with ```json and ```):
         "relationship_attributes": {{
             "fact_time": "ISO 8601 UTC timestamp for single point events (e.g., '2025-06-25T11:30:00Z') OR",
             "fact_time_range": {{"start": "ISO timestamp", "end": "ISO timestamp or null"}} for time ranges,
-            "time_expression": "original time expression from source text for evidence traceability",
+            "temporal_context": "The valid time frame for the relationship. This could be a specific date, a time range from source text for evidence traceability",
             "condition": "(if available) Natural language description of circumstances under which the relationship holds.",
             "scope": "(if available). Natural language description of the applicable range or context (e.g., versioning, environment).",
             "prerequisite": "Optional. A natural language description of required preconditions.",
@@ -650,7 +650,7 @@ Return a JSON object with your reasoning discoveries in the following format (su
             "relationship_attributes": {{
                 "fact_time": "ISO 8601 UTC timestamp for single point events (e.g., '2025-06-25T11:30:00Z') OR",
                 "fact_time_range": {{"start": "ISO timestamp", "end": "ISO timestamp or null"}} for time ranges,
-                "time_expression": "original time expression from source text for evidence traceability",
+                "temporal_context": "The valid time frame for the relationship. This could be a specific date, a time range from source text for evidence traceability",
                 "condition": "(if available) Inferred condition under which the relationship holds.",
                 "scope": "(if available) Inferred applicable scope for the relationship.",
                 "prerequisite": "Optional. Inferred preconditions for the relationship.",

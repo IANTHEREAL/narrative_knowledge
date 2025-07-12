@@ -90,10 +90,10 @@ To ensure the accuracy, consistency, and computability of temporal information, 
         - A duration of one year: `{"start": "2024-01-01T00:00:00Z", "end": "2024-12-31T23:59:59Z"}`
         - Starting from a specific time: `{"start": "2025-01-01T00:00:00Z", "end": null}`
 
-- **`time_expression` (Original Time Expression)**
+- **`temporal_context` (Original Time Context)**
     - **Definition**: Used to store the **raw, unprocessed original time expression** as extracted directly from the source text. This attribute is critical for traceability and understanding context.
     - **Format**: String.
-    - **Example**: `"time_expression": "in the fourth quarter of last year"` or `"time_expression": "since the company was founded"`
+    - **Example**: `"temporal_context": "in the fourth quarter of last year"` or `"temporal_context": "since the company was founded"`
 
 ---
 
@@ -101,4 +101,4 @@ To ensure the accuracy, consistency, and computability of temporal information, 
 
 - **Evidence-Based Mandate**: Every single claim in the knowledge graph—be it an entity, a relationship, or any of its attributes—must be backed by explicit, traceable evidence.
 - **No Speculation**: It is strictly forbidden to infer or assume information that is not explicitly stated in the source data.
-- **Verifiable**: All information should be verifiable. For instance, the `time_expression` attribute serves as direct evidentiary support for the structured `fact_time` and `fact_time_range` attributes.
+- **Verifiable**: All information should be verifiable. For instance, the `temporal_context` attribute serves as direct evidentiary support for the structured `fact_time` and `fact_time_range` attributes.

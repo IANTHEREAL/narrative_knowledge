@@ -1,13 +1,3 @@
-"""
-Personal Memory System for Chat History Analysis and User Insights Generation.
-
-This module provides functionality for:
-1. Processing chat message batches into summarized knowledge blocks
-2. Managing personal insight analysis blueprints
-3. Generating user insights as graph triplets
-4. Conflict detection and resolution for memory updates
-"""
-
 import json
 import logging
 import hashlib
@@ -87,26 +77,27 @@ The underlying logic for processing remains robust but is now applied to this br
 1.  Extraction and Organization Process
 
     * Step 1: Cluster: Group related signals. For example, cluster messages about "training schedules," "running shoes," and "signing up for a 10k race" under a single theme.
-    * Step 2: Synthesize: Formulate a concise insight statement.
-        * Good Example: "User is actively training for a running event."
-        * Good Example: "User has a strong interest in Japanese literature."
+    * Step 2: Synthesize & Structure: Formulate a concise insight and structure it with key attributes. Each insight must include:
+        *   **Insight Statement**: A clear, concise summary of the user trait. (e.g., "User is actively training for a running event.")
+        *   **Insight declaration attributes**:
+            *   **Confidence Level**: An assessment of confidence ("High", "Medium", or "Low"). This is determined by the quantity and quality of evidence. Explicit statements ("I am a...") or repeated mentions of a topic signal High confidence.
+            *   **Temporal Context**: The valid time frame for the insight. This could be a specific date, a time range (e.g., "January-March 2024"), or "ongoing" if it seems to be a stable trait.
     * Step 3: Link Evidence: Every insight must be backed by evidence (a message summary and its timestamp) to ensure it is traceable and verifiable.
-    * step 4: add the temporal context of the insight to the insight.
 
 2.  Handling Special Cases
 
     * Handling Conflicts (as Evolution): Treat contradictions as evidence of personal growth or change.
         * Core Principle: A change of mind is a valuable insight into a person's journey.
-        * Strategy: Create separate, time-bound insights.
+        * Strategy: Create separate, time-bound insights. The Temporal Context is crucial here.
         * Example:
-            1.  Insight A: "User expressed a dislike for modern art." (Evidence from 2024).
-            2.  Insight B: "User shared their excitement about visiting the Tate Modern gallery." (Evidence from 2025).
+            1.  Insight A: "User expressed a dislike for modern art.", attributes: { confidence: "High", temporal_context: "Observed in 2023", other_attributes... }
+            2.  Insight B: "User shared their excitement about visiting the Tate Modern gallery.", attributes: { confidence: "Medium", temporal_context: "Observed in 2024", other_attributes...}
         * Value: This combination tells a story: the user's taste in art is evolving.
 
     * Handling Repetition (as Confidence): Use repetition to strengthen an insight's validity.
         * Core Principle: When a user repeatedly brings up a topic, it signifies its importance to them.
-        * Strategy: Instead of creating duplicates, add the new messages as evidence to the existing insight and increase its confidence score.
-        * Example: If a user who has previously mentioned enjoying hiking now talks about buying new hiking boots, the existing insight "User has an interest in hiking" is reinforced and its confidence level is increased.
+        * Strategy: Instead of creating duplicates, add new messages as evidence to the existing insight and update its attributes. The Confidence Level should be increased (e.g., from "Medium" to "High"). The Temporal Context should also be updated to reflect the latest evidence.
+        * Example: If a user who has a "Medium" confidence insight "User has an interest in hiking" now talks about buying new hiking boots, the insight is reinforced. Its Confidence Level should be upgraded to "High" and its Temporal Context updated.
 
 </Part2>
 </Specification>
