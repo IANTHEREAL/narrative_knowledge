@@ -111,6 +111,20 @@ class GraphBuildDaemon:
             try:
                 task_data = []
                 for task in topic_tasks:
+                    if task.storage_directory.startswith("memory://"):
+                        task_data.append(
+                            {
+                                "build_id": task.build_id,
+                                "storage_directory": "",
+                                "document_file": task.doc_link,
+                                "metadata": {
+                                    "doc_link": task.doc_link,
+                                    "topic_name": task.topic_name,
+                                }
+                            }
+                        )
+                        continue
+
                     if not task.storage_directory:
                         logger.error(
                             f"Task {task.build_id} has no storage directory, marking as failed"
