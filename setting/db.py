@@ -37,59 +37,27 @@ class DatabaseManager:
         self.user_connections: Dict[str, sessionmaker] = {}
         self.local_database_uri = DATABASE_URI
         logger.info(f"DatabaseManager initialized with local database")
-        self._initialize_local_database()
+        # Initialize local database with the same logic as external databases
+        self._create_user_tables(engine)
 
-    def _initialize_local_database(self):
+    def _create_user_tables(self, engine):
         """
-        Checks if tables exist in the local database and creates them if they don't.
-        This ensures the application can start without manual database setup.
+        Create all necessary tables in database.
+
+        Args:
+            engine: SQLAlchemy engine for the database
+
+        Raises:
+            Exception: If table creation fails
         """
         try:
-            logger.info("Inspecting local database schema...")
-            # Import models here to ensure Base.metadata is populated for the check.
-            from knowledge_graph.models import Base as KnowledgeBase
+            from knowledge_graph.models import Base
 
-            inspector = sqlalchemy_inspect(engine)
-            existing_tables = inspector.get_table_names()
-
-            expected_tables = list(KnowledgeBase.metadata.tables.keys())
-            missing_tables = set(expected_tables) - set(existing_tables)
-
-            logger.info(
-                f"Found {len(existing_tables)} existing tables: {existing_tables}"
-            )
-            logger.info(f"Expected {len(expected_tables)} tables: {expected_tables}")
-
-            if not missing_tables:
-                logger.info("Local database schema is up to date.")
-                return
-
-            logger.warning(
-                f"Missing tables in local database: {', '.join(missing_tables)}. Creating them..."
-            )
-
-            # Create only the missing tables, not all tables
-            for table_name in missing_tables:
-                if table_name in KnowledgeBase.metadata.tables:
-                    table = KnowledgeBase.metadata.tables[table_name]
-                    try:
-                        table.create(bind=engine)
-                        logger.info(f"Successfully created table: {table_name}")
-                    except Exception as table_error:
-                        logger.error(
-                            f"Failed to create table {table_name}: {table_error}"
-                        )
-                        raise
-
-            logger.info(
-                "Successfully created all missing tables in the local database."
-            )
-
+            Base.metadata.create_all(engine)
+            logger.info("Successfully created/verified tables in database")
         except Exception as e:
-            logger.critical(
-                f"CRITICAL: Failed to initialize local database: {e}", exc_info=True
-            )
-            raise  # Re-raise the exception to prevent the application from starting in a bad state.
+            logger.error(f"Failed to create tables in database: {e}")
+            raise Exception(f"Failed to initialize database schema: {str(e)}")
 
     def get_session_factory(self, database_uri: Optional[str] = None) -> sessionmaker:
         """
@@ -156,25 +124,6 @@ class DatabaseManager:
             or database_uri == ""
             or database_uri == self.local_database_uri
         )
-
-    def _create_user_tables(self, engine):
-        """
-        Create all necessary tables in user database.
-
-        Args:
-            engine: SQLAlchemy engine for the user database
-
-        Raises:
-            Exception: If table creation fails
-        """
-        try:
-            from knowledge_graph.models import Base
-
-            Base.metadata.create_all(engine)
-            logger.info("Successfully created tables in user database")
-        except Exception as e:
-            logger.error(f"Failed to create tables in user database: {e}")
-            raise Exception(f"Failed to initialize database schema: {str(e)}")
 
     def validate_database_connection(self, database_uri: str) -> bool:
         """
