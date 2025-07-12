@@ -558,7 +558,7 @@ Generate a concise narrative summary that captures the essence of this conversat
                     external_database_uri=external_db_uri,
                     storage_directory=f"memory://{user_id}/chat_batch/",  # Virtual storage for memory
                     doc_link=chat_batch_link,
-                    status="uploaded",
+                    status="pending",
                 )
                 db.add(build_status)
                 db.commit()
