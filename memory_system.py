@@ -547,8 +547,11 @@ Generate a concise narrative summary that captures the essence of this conversat
 
                 if existing_build_status:
                     logger.info(
-                        f"Graph build task already exists for build_id: {build_id}"
+                        f"Graph build task already exists for build_id: {build_id}, updating status to pending"
                     )
+                    existing_build_status.status = "pending"
+                    db.commit()
+                    db.refresh(existing_build_status)
                     return build_id
 
                 # Create new GraphBuild record
