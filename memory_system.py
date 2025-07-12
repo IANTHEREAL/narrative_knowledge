@@ -353,7 +353,7 @@ class PersonalMemorySystem:
                 )
                 if existing_block:
                     logger.info(
-                        f"Summary knowledge block already exists for source {source_data.id}, reusing block {existing_block.id}"
+                        f"Summary knowledge block already exists for source {source_data['id']}, reusing block {existing_block.id}"
                     )
                     return {
                         "id": existing_block.id,
