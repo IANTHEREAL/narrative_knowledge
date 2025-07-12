@@ -375,7 +375,7 @@ Extract information that would be valuable for understanding this conversation.
             # Create source mapping
             mapping = BlockSourceMapping(
                 block_id=knowledge_block.id,
-                source_id=source_data.id,
+                source_id=source_data["id"],
                 position_in_source=0,
             )
             db.add(mapping)
