@@ -332,24 +332,47 @@ class PersonalMemorySystem:
                     return existing_block
 
         # Create summary content for knowledge block
-        summary_prompt = f"""Conversation Summary for user conversation {source_data["name"]}
+        summary_prompt = f"""Generate a narrative summary of this conversation following these guidelines:
 
-Conversation Title:
-{source_data["attributes"].get("conversation_title", source_data["name"])}
+## Core Principles
+- **Fidelity First**: Stay true to the original conversation content
+- **Narrative Flow**: Present events in a story-like sequence
+- **Preserve Authenticity**: Use direct quotes from the original messages
+- **Respect Timeline**: Maintain the actual temporal sequence of events
 
-Conversation Content:
+## What to Include
+- **Actual timestamps and session details**
+- **Direct quotes from user and assistant messages**
+- **Real conversation flow and progression**
+- **Specific technical details mentioned**
+- **Concrete actions or decisions stated**
+
+## What to Avoid
+- **Emotional interpretations** not present in the original text
+- **Psychological analysis** or assumed motivations
+- **Embellished descriptions** that add fictional elements
+- **Speculation** about unstated thoughts or feelings
+- **Metaphorical language** that wasn't in the original
+
+## Structure
+1. **Opening**: Set the scene with actual time/session context
+2. **Core Events**: Present the conversation flow with direct quotes
+3. **Conclusion**: Summarize the actual outcomes or decisions made
+
+---
+
+## Conversation Data:
+
+**Title**: {source_data["attributes"].get("conversation_title", source_data["name"])}
+**Date**: {source_data["attributes"].get("last_message_date", "unknown")}
+
+**Conversation Content**:
 {source_data["content"]}
 
-Attributes for this conversation:
+**Additional Attributes**:
 {source_data["attributes"]}
 
-Focus on:
-1. **Specific queries**: Concrete questions the user asked or topics discussed
-2. **Facets**: Specific aspects of the conversation
-3. **Activities**: What the user did
-4. **Temporal context**: When or what time range did the activity/facet occur?
-
-Extract information that would be valuable for understanding this conversation.
+Generate a concise narrative summary that captures the essence of this conversation while remaining faithful to the original content.
 """
         try:
             response = self.llm_client.generate(summary_prompt, max_tokens=4096)

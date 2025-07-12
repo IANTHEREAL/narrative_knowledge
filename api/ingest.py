@@ -121,7 +121,7 @@ async def _process_json_for_personal_memory(
 
     response = APIResponse(
         status="success",
-        message=f"Successfully processed {len(input_data)} messages for personal memory, generating {result['insights_generated']} insights.",
+        message=f"Successfully processed {len(input_data)} messages for personal memory",
         data=result,
     )
     return JSONResponse(status_code=status.HTTP_200_OK, content=response.dict())
