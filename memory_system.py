@@ -547,9 +547,9 @@ Generate a concise narrative summary that captures the essence of this conversat
 
                 if existing_build_status:
                     logger.info(
-                        f"Graph build task already exists for build_id: {build_id}, updating status to pending"
+                        f"Graph build task already exists for build_id: {build_id}, updating status to completed"
                     )
-                    existing_build_status.status = "pending"
+                    existing_build_status.status = "completed"
                     db.commit()
                     db.refresh(existing_build_status)
                     return build_id
@@ -561,7 +561,7 @@ Generate a concise narrative summary that captures the essence of this conversat
                     external_database_uri=external_db_uri,
                     storage_directory=f"memory://{user_id}/chat_batch/",  # Virtual storage for memory
                     doc_link=chat_batch_link,
-                    status="pending",
+                    status="completed",
                 )
                 db.add(build_status)
                 db.commit()
