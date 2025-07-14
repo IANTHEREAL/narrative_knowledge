@@ -279,28 +279,6 @@ def run_memory_value_test():
         
         print("-" * 50)
     
-    # Step 3: Demonstrate memory value
-    print_section("STEP 3: MEMORY VALUE DEMONSTRATION")
-    print("🎯 MEMORY SYSTEM VALUE DEMONSTRATED:")
-    print()
-    print("1. 📚 CONTEXT PRESERVATION: The system remembers the user's journey")
-    print("   from marketing analyst to aspiring data scientist over 4 months.")
-    print()
-    print("2. 🧠 PERSONALIZED UNDERSTANDING: It knows their specific interests")
-    print("   (customer behavior, marketing campaigns, predictive modeling).")
-    print()
-    print("3. 🎯 TAILORED ASSISTANCE: Can provide relevant help based on their")
-    print("   background, current skill level, and learning goals.")
-    print()
-    print("4. 🔄 PROGRESS TRACKING: Remembers what they've learned and what")
-    print("   challenges they've faced to avoid repetition.")
-    print()
-    print("5. 🚀 FUTURE GUIDANCE: Can suggest next steps based on their")
-    print("   interests and career trajectory.")
-    print()
-    print("💡 WITHOUT MEMORY: Each conversation would start from scratch.")
-    print("🎉 WITH MEMORY: The AI becomes a personalized learning companion!")
-    
     print_section("TEST COMPLETED")
     print(f"User ID: {USER_ID}")
     print("You can now use this data to test more advanced memory queries!")
