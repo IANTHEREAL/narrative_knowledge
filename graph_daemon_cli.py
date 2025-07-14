@@ -15,7 +15,7 @@ import threading
 import time
 from dotenv import load_dotenv
 
-from knowledge_graph.graph_builder_daemon import KnowledgeExtractionDaemon
+from knowledge_graph.knowledge_daemon import KnowledgeExtractionDaemon
 from knowledge_graph.graph_daemon import KnowledgeGraphDaemon
 from llm.factory import LLMInterface
 from llm.embedding import get_text_embedding

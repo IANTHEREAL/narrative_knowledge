@@ -172,7 +172,6 @@ def run_memory_value_test():
     
     # Step 1: Ingest conversation history
     print_section("STEP 1: INGESTING CONVERSATION HISTORY")
-    """
     conversation_batches = [
         ("Month 1: Career Transition Start", month1_data_science),
         ("Month 2: Learning Progress", month2_learning), 
@@ -212,8 +211,7 @@ def run_memory_value_test():
             
         # Small delay between batches
         time.sleep(1)
-    """
-
+        break
     
     # Step 2: Query memory to answer questions
     print_section("STEP 2: QUERYING MEMORY TO ANSWER QUESTIONS")
