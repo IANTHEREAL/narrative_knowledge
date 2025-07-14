@@ -38,13 +38,8 @@ def setup_logging(log_level: str = "INFO"):
 def signal_handler(signum, frame, daemons):
     """Handle shutdown signals gracefully."""
     logging.info(f"Received signal {signum}, shutting down daemon(s)...")
-    if isinstance(daemons, list):
-        for daemon in daemons:
-            if daemon and hasattr(daemon, 'stop'):
-                daemon.stop()
-    else:
-        if daemons and hasattr(daemons, 'stop'):
-            daemons.stop()
+    if daemons and hasattr(daemons, 'stop'):
+        daemons.stop()
     sys.exit(0)
 
 
