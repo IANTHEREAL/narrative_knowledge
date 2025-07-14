@@ -106,97 +106,6 @@ def start_single_daemon(args, daemon_type):
         logger.info(f"{daemon_name} stopped.")
 
 
-def start_both_daemons(args):
-    """Start both daemons concurrently."""
-    # Setup logging
-    setup_logging(args.log_level)
-
-    logger = logging.getLogger(__name__)
-    logger.info("Starting both Knowledge Extraction and Graph Building daemons...")
-    
-    config_info = (
-        f"Configuration: extraction_interval={args.extraction_interval}s, "
-        f"graph_interval={args.graph_interval}s, log_level={args.log_level}, "
-        f"llm_provider={args.llm_provider}, llm_model={args.llm_model}, "
-        f"worker_count={args.worker_count}, "
-        f"embedding_model endpoint={os.getenv('EMBEDDING_BASE_URL')}, "
-        f"LLM endpoint={os.getenv('OPENAI_LIKE_BASE_URL')}"
-    )
-    logger.info(config_info)
-
-    try:
-        # Initialize LLM client
-        llm_client = LLMInterface(args.llm_provider, args.llm_model)
-        logger.info(f"Initialized LLM client: {args.llm_provider}/{args.llm_model}")
-
-        # Initialize both daemons
-        extraction_daemon = KnowledgeExtractionDaemon(
-            llm_client=llm_client,
-            embedding_func=get_text_embedding,
-            check_interval=args.extraction_interval,
-        )
-        
-        graph_daemon = KnowledgeGraphDaemon(
-            llm_client=llm_client,
-            embedding_func=get_text_embedding,
-            check_interval=args.graph_interval,
-            worker_count=args.worker_count,
-        )
-
-        daemons = [extraction_daemon, graph_daemon]
-
-        # Setup signal handlers for graceful shutdown
-        signal.signal(signal.SIGINT, lambda s, f: signal_handler(s, f, daemons))
-        signal.signal(signal.SIGTERM, lambda s, f: signal_handler(s, f, daemons))
-
-        # Start both daemons in separate threads
-        def run_extraction():
-            try:
-                extraction_daemon.start()
-            except Exception as e:
-                logger.error(f"Error in extraction daemon: {e}", exc_info=True)
-
-        def run_graph():
-            try:
-                graph_daemon.start()
-            except Exception as e:
-                logger.error(f"Error in graph daemon: {e}", exc_info=True)
-
-        extraction_thread = threading.Thread(target=run_extraction, name="ExtractionDaemon")
-        graph_thread = threading.Thread(target=run_graph, name="GraphDaemon")
-
-        extraction_thread.daemon = True
-        graph_thread.daemon = True
-
-        extraction_thread.start()
-        graph_thread.start()
-
-        logger.info("Both daemons are now running. Press Ctrl+C to stop.")
-
-        # Keep main thread alive
-        try:
-            while True:
-                time.sleep(10)
-                # Optional: log status
-                if extraction_thread.is_alive() and graph_thread.is_alive():
-                    logger.debug("Both daemons are running normally...")
-                else:
-                    logger.warning("One or more daemons have stopped unexpectedly")
-                    break
-        except KeyboardInterrupt:
-            logger.info("Received keyboard interrupt, shutting down...")
-
-        # Wait for threads to finish
-        extraction_thread.join(timeout=5)
-        graph_thread.join(timeout=5)
-
-    except Exception as e:
-        logger.error(f"Error starting daemons: {e}", exc_info=True)
-        sys.exit(1)
-    finally:
-        logger.info("All daemons stopped.")
-
-
 def show_status(args):
     """Show daemon and task status."""
     logging.basicConfig(level=logging.WARNING)  # Suppress info logs for status display
@@ -310,7 +219,6 @@ def main():
 Examples:
   %(prog)s extraction                     # Start knowledge extraction daemon
   %(prog)s graph                          # Start knowledge graph daemon  
-  %(prog)s both                           # Start both daemons concurrently
   %(prog)s status                         # Show current status of both daemons
   %(prog)s status --show-failed           # Show status including failed tasks
         """,
@@ -366,28 +274,6 @@ Examples:
         help="Number of workers for graph building (default: 5)",
     )
 
-    # Both daemons subcommand
-    both_parser = subparsers.add_parser("both", help="Start both daemons concurrently")
-    add_common_args(both_parser)
-    both_parser.add_argument(
-        "--extraction-interval",
-        type=int,
-        default=60,
-        help="Interval in seconds for extraction daemon (default: 60)",
-    )
-    both_parser.add_argument(
-        "--graph-interval",
-        type=int,
-        default=120,
-        help="Interval in seconds for graph daemon (default: 120)",
-    )
-    both_parser.add_argument(
-        "--worker-count",
-        type=int,
-        default=5,
-        help="Number of workers for graph building (default: 5)",
-    )
-
     # Status subcommand
     status_parser = subparsers.add_parser("status", help="Show daemon and task status")
     status_parser.add_argument(
@@ -411,8 +297,6 @@ Examples:
             start_single_daemon(args, "extraction")
         elif args.command == "graph":
             start_single_daemon(args, "graph")
-        elif args.command == "both":
-            start_both_daemons(args)
         elif args.command == "status":
             show_status(args)
     except Exception as e:
