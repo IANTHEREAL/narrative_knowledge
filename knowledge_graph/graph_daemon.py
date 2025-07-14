@@ -28,7 +28,7 @@ class KnowledgeGraphDaemon:
         llm_client: Optional[LLMInterface] = None,
         embedding_func=None,
         check_interval: int = 120,
-        worker_count: int = 5
+        worker_count: int = 3
     ):
         """
         Initialize the knowledge graph daemon.
