@@ -2,7 +2,7 @@
 
 ## Memory Processing Flow
 
-### Current Memory Flow Architecture
+### Updated Memory Flow Architecture (Tool-Based)
 
 ```
 POST /api/v1/save (JSON)
@@ -19,9 +19,12 @@ PipelineOrchestrator.execute_pipeline() → ["memory_graph_build"]
     ↓
 MemoryGraphBuildTool.execute()
     ↓
-PersonalMemorySystem.process_chat_batch() [via MemoryGraphBuildTool]
-    ↓
-KnowledgeGraphBuilder.build_knowledge_graph()
+PersonalMemorySystem.process_chat_batch() [direct processing]
+    ├─ _store_chat_batch_as_source() 
+    ├─ _create_summary_knowledge_block() 
+    ├─ create_personal_blueprint()  
+    └─ _build_graph_from_memory()  # Direct tool-based graph building
+        └─ GraphBuildTool._process_single_document()
     ↓
 Graph triplets in database
 ```
@@ -36,7 +39,7 @@ Graph triplets in database
 - `tools/orchestrator.py:select_default_pipeline()` – Returns `"memory_direct_graph"` for memory processing
 
 #### 3. Memory Processing Tool:
-- `tools/memory_graph_build_tool.py:MemoryGraphBuildTool.execute()` – Lines 101-150
+- `tools/memory_graph_build_tool.py:MemoryGraphBuildTool.execute()` – Lines 101-227
 - **Key**: This tool wraps the `PersonalMemorySystem` within the pipeline architecture
 
 #### 4. Memory System Integration:
@@ -47,14 +50,16 @@ result = memory_system.process_chat_batch(
     chat_messages=input_data["chat_messages"],
     user_id=input_data["user_id"]
 )
+# Direct processing replaces GraphBuild background daemon
 ```
 
 ### How Memory System is Used Within Pipeline
 
 `MemoryGraphBuildTool` acts as an adapter that:
 1. Receives pipeline-compatible input (chat messages + user_id)  
-2. Delegates to `PersonalMemorySystem` for actual memory processing  
-3. Returns pipeline-compatible output (with graph triplets)  
+2. Delegates to `PersonalMemorySystem` for actual memory processing 
+3. Uses `GraphBuildTool` for immediate graph building
+4. Returns pipeline-compatible output with graph triplets/results 
 
 ### API Usage Examples
 
@@ -81,7 +86,7 @@ Content-Type: application/json
 **Flow Path:**
 1. API: `_process_json_for_personal_memory()` → `PipelineAPIIntegration`  
 2. Orchestrator: `select_default_pipeline()` → `"memory_direct_graph"`  
-3. Tool: `MemoryGraphBuildTool.execute()` → Uses `PersonalMemorySystem`  
+3. Tool: `MemoryGraphBuildTool.execute()` → Uses `PersonalMemorySystem` with direct graph building
 4. Result: Graph triplets stored under topic `The personal information of user123`
 
 ---
@@ -110,7 +115,7 @@ Graph triplets in database
 
 ### Document Processing Scenarios Flow
 
-#### Scenario 1: Single Document, Existing Topic (3.1.1)
+#### Scenario 1: Single Document, Existing Topic (4.1.1)
 
 - **Input:** `POST /api/v1/save` with single file  
 - **Parameters:** `target_type="knowledge_graph"`, `topic_name="python_tutorial"`, `is_new_topic=false`, `file_count=1`
@@ -125,7 +130,7 @@ Graph triplets in database
 
 ---
 
-#### Scenario 2: Batch Documents, Existing Topic (3.1.2)
+#### Scenario 2: Batch Documents, Existing Topic (4.1.2)
 
 - **Input:** `POST /api/v1/save` with multiple files  
 - **Parameters:** `target_type="knowledge_graph"`, `topic_name="machine_learning"`, `is_new_topic=false`, `file_count>1`
@@ -141,7 +146,7 @@ Graph triplets in database
 
 ---
 
-#### Scenario 3: New Topic, Batch Documents (3.1.3)
+#### Scenario 3: New Topic, Batch Documents (4.1.3)
 
 - **Input:** `POST /api/v1/save` with multiple files  
 - **Parameters:** `target_type="knowledge_graph"`, `topic_name="new_ai_research"`, `is_new_topic=true`, `file_count>1`
