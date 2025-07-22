@@ -1,24 +1,24 @@
 """
-Base job classes and utilities for the pipeline job system
+Base tool interface and shared utilities for the tool-based architecture.
+
+Tools are stateless, independent functions that perform single,
+well-defined tasks in the pipeline design.
 """
 
-import logging
-import uuid
 from abc import ABC, abstractmethod
-from datetime import datetime
-from typing import Any, Dict, Optional, List
-from dataclasses import dataclass
+from typing import Dict, Any, Optional, List
+import logging
+from pathlib import Path
+import json
+from datetime import datetime, timezone
+import uuid
 from enum import Enum
 
-from sqlalchemy.orm import Session
-from knowledge_graph.models import JobExecution, PipelineJob
+from setting.db import SessionLocal
 
 
-logger = logging.getLogger(__name__)
-
-
-class JobStatus(Enum):
-    """Job execution status"""
+class ExecutionStatus(Enum):
+    """Tool execution status"""
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -26,14 +26,25 @@ class JobStatus(Enum):
     CANCELLED = "cancelled"
 
 
-@dataclass
-class JobResult:
-    """Result of job execution"""
-    success: bool
-    data: Optional[Dict[str, Any]] = None
-    error_message: Optional[str] = None
-    error_details: Optional[Dict[str, Any]] = None
-    execution_time_seconds: Optional[float] = None
+class ToolResult:
+    """Result object returned by tools."""
+    
+    def __init__(
+        self,
+        success: bool,
+        data: Optional[Dict[str, Any]] = None,
+        error_message: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        execution_id: Optional[str] = None,
+        duration_seconds: Optional[float] = None
+    ):
+        self.success = success
+        self.data = data or {}
+        self.error_message = error_message
+        self.metadata = metadata or {}
+        self.execution_id = execution_id
+        self.duration_seconds = duration_seconds
+        self.timestamp = datetime.now(timezone.utc).isoformat()
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
@@ -41,85 +52,86 @@ class JobResult:
             "success": self.success,
             "data": self.data,
             "error_message": self.error_message,
-            "error_details": self.error_details,
-            "execution_time_seconds": self.execution_time_seconds,
-        }
-
-
-@dataclass
-class JobContext:
-    """Context information for job execution"""
-    execution_id: str
-    job_type: str
-    input_data: Dict[str, Any]
-    config: Optional[Dict[str, Any]] = None
-    retry_count: int = 0
-    max_retries: int = 3
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for JSON serialization"""
-        return {
+            "metadata": self.metadata,
             "execution_id": self.execution_id,
-            "job_type": self.job_type,
-            "input_data": self.input_data,
-            "config": self.config,
-            "retry_count": self.retry_count,
-            "max_retries": self.max_retries,
+            "duration_seconds": self.duration_seconds,
+            "timestamp": self.timestamp
         }
 
 
-class BaseJob(ABC):
+class BaseTool(ABC):
     """
-    Base class for all pipeline jobs
+    Base class for all tools in the knowledge graph construction pipeline.
     
-    Each job is responsible for:
-    1. Validating input data
-    2. Executing the specific job logic
-    3. Updating state objects
-    4. Returning structured results
+    Tools are stateless, independent functions that perform a single, well-defined task.
+    Enhanced with job-like execution tracking and state management.
+    
+    1. DocumentETLTool - Processes raw documents into structured SourceData
+    2. BlueprintGenerationTool - Creates analysis blueprints from topic documents
+    3. GraphBuildTool - Extracts knowledge and builds the knowledge graph
     """
     
-    def __init__(self, session_factory, llm_client=None, embedding_func=None):
+    def __init__(self, logger_name: Optional[str] = None, session_factory=None):
+        self.logger = logging.getLogger(logger_name or self.__class__.__name__)
+        self.session_factory = session_factory
+    
+    @property
+    @abstractmethod
+    def tool_name(self) -> str:
+        """Human-readable name of the tool."""
+        pass
+        
+    @property
+    def tool_key(self) -> str:
+        """Short key identifier for pipeline configuration."""
+        return self.tool_name.lower().replace("tool", "").replace(" ", "_")
+    
+    @property
+    @abstractmethod
+    def tool_description(self) -> str:
+        """Description of what the tool does."""
+        pass
+    
+    @property
+    def input_schema(self) -> Dict[str, Any]:
         """
-        Initialize base job
+        JSON Schema for input validation.
+        Override in subclasses to provide specific validation schema.
+        """
+        return {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    
+    @property
+    def output_schema(self) -> Dict[str, Any]:
+        """
+        JSON Schema for output validation.
+        Override in subclasses to provide specific output schema.
+        """
+        return {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    
+    @abstractmethod
+    def execute(self, input_data: Dict[str, Any]) -> ToolResult:
+        """
+        Execute the tool with given input data.
         
         Args:
-            session_factory: Database session factory
-            llm_client: LLM client for jobs that need LLM processing
-            embedding_func: Embedding function for jobs that need embeddings
+            input_data: Dictionary containing tool-specific parameters
+            
+        Returns:
+            ToolResult with execution results
         """
-        self.session_factory = session_factory
-        self.llm_client = llm_client
-        self.embedding_func = embedding_func
-        self.logger = logging.getLogger(f"{self.__class__.__module__}.{self.__class__.__name__}")
-    
-    @property
-    @abstractmethod
-    def job_type(self) -> str:
-        """Return the job type identifier"""
-        pass
-    
-    @property
-    @abstractmethod
-    def job_name(self) -> str:
-        """Return the human-readable job name"""
-        pass
-    
-    @property
-    @abstractmethod
-    def input_schema(self) -> Dict[str, Any]:
-        """Return the expected input data schema"""
-        pass
-    
-    @property
-    @abstractmethod
-    def output_schema(self) -> Dict[str, Any]:
-        """Return the expected output data schema"""
         pass
     
     def validate_input(self, input_data: Dict[str, Any]) -> bool:
         """
-        Validate input data against the job's input schema
+        Validate input data against the tool's input schema.
         
         Args:
             input_data: Input data to validate
@@ -127,205 +139,132 @@ class BaseJob(ABC):
         Returns:
             True if valid, False otherwise
         """
-        # Basic validation - can be overridden by specific jobs
-        required_fields = self.input_schema.get("required", [])
-        for field in required_fields:
-            if field not in input_data:
-                self.logger.error(f"Missing required field: {field}")
-                return False
-        return True
-    
-    @abstractmethod
-    def execute_job_logic(self, context: JobContext) -> JobResult:
-        """
-        Execute the core job logic
-        
-        Args:
-            context: Job execution context
-            
-        Returns:
-            JobResult with execution results
-        """
-        pass
-    
-    def execute(self, input_data: Dict[str, Any], config: Optional[Dict[str, Any]] = None) -> JobResult:
-        """
-        Execute the job with full error handling and state tracking
-        
-        Args:
-            input_data: Input data for the job
-            config: Optional job configuration
-            
-        Returns:
-            JobResult with execution results
-        """
-        execution_id = str(uuid.uuid4())
-        start_time = datetime.now()
-        
-        # Create job context
-        context = JobContext(
-            execution_id=execution_id,
-            job_type=self.job_type,
-            input_data=input_data,
-            config=config or {}
-        )
-        
-        self.logger.info(f"Starting job execution: {execution_id} ({self.job_name})")
-        
-        # Create job execution record
-        job_execution = None
         try:
-            with self.session_factory() as db:
-                # Get or create pipeline job definition
-                pipeline_job = self._get_or_create_pipeline_job(db)
-                
-                # Create job execution record
-                job_execution = JobExecution(
-                    job_id=pipeline_job.id,
-                    execution_context=context.to_dict(),
-                    status=JobStatus.RUNNING.value,
-                    started_at=start_time,
+            import jsonschema
+            jsonschema.validate(input_data, self.input_schema)
+            return True
+        except ImportError:
+            # Fallback to basic validation if jsonschema not available
+            required = self.input_schema.get("required", [])
+            for field in required:
+                if field not in input_data:
+                    self.logger.error(f"Missing required field: {field}")
+                    return False
+            return True
+        except Exception:
+            return False
+    
+    def get_required_inputs(self) -> List[str]:
+        """
+        Return list of required input parameters.
+        
+        Returns:
+            List of required parameter names
+        """
+        return self.input_schema.get("required", [])
+    
+    def get_optional_inputs(self) -> List[str]:
+        """
+        Return list of optional input parameters.
+        
+        Returns:
+            List of optional parameter names
+        """
+        properties = self.input_schema.get("properties", {})
+        required = set(self.input_schema.get("required", []))
+        return [k for k in properties.keys() if k not in required]
+    
+    def execute_with_tracking(self, input_data: Dict[str, Any], 
+                            execution_id: Optional[str] = None) -> ToolResult:
+        """
+        Execute the tool with execution tracking (job-like).
+        
+        Args:
+            input_data: Dictionary containing tool-specific parameters
+            execution_id: Optional execution ID for tracking
+            
+        Returns:
+            ToolResult with execution results and tracking info
+        """
+        
+        execution_id = execution_id or str(uuid.uuid4())
+        start_time = datetime.now(timezone.utc).isoformat()
+        
+        self.logger.info(f"Starting tool execution: {self.tool_name} ({execution_id})")
+        
+        try:
+            # Validate input
+            if not self.validate_input(input_data):
+                return ToolResult(
+                    success=False,
+                    error_message="Input validation failed",
+                    execution_id=execution_id
                 )
-                db.add(job_execution)
-                db.commit()
-                db.refresh(job_execution)
-                
-                context.execution_id = job_execution.id
-        
-        except Exception as e:
-            self.logger.error(f"Failed to create job execution record: {e}")
-            return JobResult(
-                success=False,
-                error_message=f"Failed to create job execution record: {e}"
-            )
-        
-        # Validate input
-        if not self.validate_input(input_data):
-            error_msg = "Input validation failed"
-            self._update_job_execution_failed(job_execution, error_msg)
-            return JobResult(success=False, error_message=error_msg)
-        
-        # Execute job logic
-        try:
-            result = self.execute_job_logic(context)
-            end_time = datetime.now()
-            execution_time = (end_time - start_time).total_seconds()
-            result.execution_time_seconds = execution_time
             
-            # Update job execution record
-            self._update_job_execution_success(job_execution, result)
+            # Execute tool
+            result = self.execute(input_data)
             
-            self.logger.info(f"Job execution completed successfully: {execution_id} in {execution_time:.2f}s")
-            return result
+            # Add tracking info
+            end_time = datetime.now(timezone.utc).isoformat()
+            result.execution_id = execution_id
+            result.duration_seconds = (end_time - start_time).total_seconds()
             
-        except Exception as e:
-            end_time = datetime.now()
-            execution_time = (end_time - start_time).total_seconds()
-            error_msg = f"Job execution failed: {e}"
-            
-            self.logger.error(f"Job execution failed: {execution_id} - {error_msg}", exc_info=True)
-            
-            result = JobResult(
-                success=False,
-                error_message=error_msg,
-                error_details={"exception_type": type(e).__name__, "exception_str": str(e)},
-                execution_time_seconds=execution_time
-            )
-            
-            # Update job execution record
-            self._update_job_execution_failed(job_execution, error_msg, result.error_details)
+            self.logger.info(f"Tool execution completed: {self.tool_name} ({execution_id}) in {result.duration_seconds:.2f}s")
             
             return result
-    
-    def _get_or_create_pipeline_job(self, db: Session) -> PipelineJob:
-        """Get or create the pipeline job definition"""
-        pipeline_job = db.query(PipelineJob).filter(
-            PipelineJob.job_type == self.job_type
-        ).first()
-        
-        if not pipeline_job:
-            pipeline_job = PipelineJob(
-                job_type=self.job_type,
-                job_name=self.job_name,
-                input_schema=self.input_schema,
-                output_schema=self.output_schema,
-                is_active=True
-            )
-            db.add(pipeline_job)
-            db.commit()
-            db.refresh(pipeline_job)
-        
-        return pipeline_job
-    
-    def _update_job_execution_success(self, job_execution: JobExecution, result: JobResult):
-        """Update job execution record on success"""
-        try:
-            with self.session_factory() as db:
-                execution = db.query(JobExecution).filter(
-                    JobExecution.id == job_execution.id
-                ).first()
-                
-                if execution:
-                    execution.status = JobStatus.COMPLETED.value
-                    execution.completed_at = datetime.now()
-                    execution.execution_result = result.to_dict()
-                    db.commit()
-        except Exception as e:
-            self.logger.error(f"Failed to update job execution record: {e}")
-    
-    def _update_job_execution_failed(self, job_execution: JobExecution, error_message: str, error_details: Optional[Dict] = None):
-        """Update job execution record on failure"""
-        try:
-            with self.session_factory() as db:
-                execution = db.query(JobExecution).filter(
-                    JobExecution.id == job_execution.id
-                ).first()
-                
-                if execution:
-                    execution.status = JobStatus.FAILED.value
-                    execution.completed_at = datetime.now()
-                    execution.error_message = error_message
-                    execution.error_details = error_details
-                    db.commit()
-        except Exception as e:
-            self.logger.error(f"Failed to update job execution record: {e}")
-    
-    def get_execution_history(self, limit: int = 100) -> List[Dict[str, Any]]:
-        """
-        Get execution history for this job type
-        
-        Args:
-            limit: Maximum number of executions to return
             
-        Returns:
-            List of execution records
-        """
-        try:
-            with self.session_factory() as db:
-                pipeline_job = db.query(PipelineJob).filter(
-                    PipelineJob.job_type == self.job_type
-                ).first()
-                
-                if not pipeline_job:
-                    return []
-                
-                executions = db.query(JobExecution).filter(
-                    JobExecution.job_id == pipeline_job.id
-                ).order_by(JobExecution.created_at.desc()).limit(limit).all()
-                
-                return [
-                    {
-                        "execution_id": exec.id,
-                        "status": exec.status,
-                        "started_at": exec.started_at.isoformat() if exec.started_at else None,
-                        "completed_at": exec.completed_at.isoformat() if exec.completed_at else None,
-                        "duration_seconds": exec.duration_seconds,
-                        "error_message": exec.error_message,
-                        "execution_context": exec.execution_context,
-                        "execution_result": exec.execution_result,
-                    }
-                    for exec in executions
-                ]
         except Exception as e:
-            self.logger.error(f"Failed to get execution history: {e}")
-            return [] 
+            end_time = datetime.now(timezone.utc).isoformat()
+            duration = (end_time - start_time).total_seconds()
+            
+            self.logger.error(f"Tool execution failed: {self.tool_name} ({execution_id}) - {e}")
+            
+            return ToolResult(
+                success=False,
+                error_message=str(e),
+                execution_id=execution_id,
+                duration_seconds=duration
+            )
+
+
+class ToolRegistry:
+    """Registry for managing available tools."""
+    
+    def __init__(self):
+        self._tools = {}
+    
+    def register(self, tool: BaseTool):
+        """Register a tool with the registry."""
+        self._tools[tool.tool_name] = tool
+    
+    def get_tool(self, name: str) -> Optional[BaseTool]:
+        """Get a tool by name."""
+        return self._tools.get(name)
+    
+    def list_tools(self) -> list[str]:
+        """List all registered tool names."""
+        return list(self._tools.keys())
+    
+    def execute_tool(self, name: str, input_data: Dict[str, Any]) -> ToolResult:
+        """Execute a tool by name with given input."""
+        tool = self.get_tool(name)
+        if not tool:
+            return ToolResult(
+                success=False,
+                error_message=f"Tool '{name}' not found"
+            )
+        
+        # Validate required inputs
+        required = tool.get_required_inputs()
+        missing = [req for req in required if req not in input_data]
+        if missing:
+            return ToolResult(
+                success=False,
+                error_message=f"Missing required inputs: {', '.join(missing)}"
+            )
+        
+        return tool.execute(input_data)
+
+
+# Global tool registry
+TOOL_REGISTRY = ToolRegistry()
