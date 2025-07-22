@@ -1,7 +1,11 @@
 import logging
 import json
 from pathlib import Path
-from typing import Optional, Dict, Any, Callable, Awaitable
+from typing import Optional, Dict, Any, Callable, Awaitable, List
+import tempfile
+import shutil
+import os
+import uuid
 
 from fastapi import APIRouter, Request, HTTPException, status, UploadFile, Form
 from fastapi.responses import JSONResponse
@@ -10,6 +14,7 @@ from api.models import APIResponse, DocumentMetadata, ProcessedDocument
 from api.memory import _get_memory_system
 from knowledge_graph.models import GraphBuild
 from setting.db import SessionLocal, db_manager
+from tools.api_integration import PipelineAPIIntegration
 
 # Functions imported from api.knowledge for reuse
 from api.knowledge import (
@@ -24,7 +29,92 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["ingest"])
 
 
-# --- Processing Functions ---
+# --- Tool-based Processing Functions ---
+
+api_integration = PipelineAPIIntegration()
+
+
+async def _process_file_with_pipeline(
+    file: UploadFile, metadata: Dict[str, Any], process_strategy: Dict[str, Any]) -> JSONResponse:
+    """Process an uploaded file using the new tool-based pipeline."""
+    _validate_file(file)
+
+    topic_name = metadata.get("topic_name")
+    link = metadata.get("link")
+    database_uri = metadata.get("database_uri")
+    custom_metadata = {
+        k: v
+        for k, v in metadata.items()
+        if k not in ["topic_name", "link", "database_uri"]
+    }
+
+    if not topic_name or not link:
+        raise HTTPException(
+            status_code=400,
+            detail="`topic_name` and `link` are required in metadata for target_type 'knowledge_graph'.",
+        )
+
+    # Create temporary storage for the file
+    temp_dir = tempfile.mkdtemp(prefix="knowledge_ingest_")
+    try:
+        file_path = Path(temp_dir) / (file.filename or "uploaded_file")
+        
+        # Save uploaded file
+        with open(file_path, "wb") as f:
+            content = await file.read()
+            f.write(content)
+
+        # Prepare request data for pipeline
+        request_data = {
+            "target_type": "knowledge_graph",
+            "metadata": {
+                "topic_name": topic_name,
+                "link": link,
+                "database_uri": database_uri,
+                **custom_metadata
+            },
+            "process_strategy": process_strategy or {}
+        }
+
+        # Prepare file information
+        files = [{
+            "path": str(file_path),
+            "filename": file.filename or "unknown",
+            "metadata": custom_metadata
+        }]
+
+        # Execute pipeline
+        result = api_integration.process_request(request_data, files)
+
+        # Create response
+        processed_doc = ProcessedDocument(
+            id=result.execution_id or str(uuid.uuid4()),
+            name=file.filename or "unknown",
+            file_path=str(file_path),
+            doc_link=link,
+            file_type=_get_file_type(Path(file.filename or "unknown")),
+            status="processing" if result.success else "failed",
+        )
+
+        response = APIResponse(
+            status="success" if result.success else "error",
+            message=result.message or "Processing completed",
+            data=processed_doc.model_dump(),
+        )
+
+        return JSONResponse(
+            status_code=status.HTTP_200_OK if result.success else status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content=response.model_dump()
+        )
+
+    finally:
+        # Clean up temporary directory
+        try:
+            shutil.rmtree(temp_dir)
+        except Exception as e:
+            logger.warning(f"Failed to clean up temp directory {temp_dir}: {e}")
+
+
 
 
 async def _process_file_for_knowledge_graph(
@@ -100,8 +190,7 @@ async def _process_file_for_knowledge_graph(
 
 
 async def _process_json_for_personal_memory(
-    input_data: Any, metadata: Dict[str, Any], process_strategy: Dict[str, Any]
-) -> JSONResponse:
+    input_data: Any, metadata: Dict[str, Any], process_strategy: Dict[str, Any]) -> JSONResponse:
     """Processes JSON input (chat history) to build personal memory."""
     user_id = metadata.get("user_id")
     if not user_id:
@@ -116,8 +205,21 @@ async def _process_json_for_personal_memory(
             detail="Input data for personal memory must be a list of chat messages.",
         )
 
-    memory_system = _get_memory_system()
-    result = memory_system.process_chat_batch(chat_messages=input_data, user_id=user_id)
+    # Use tool-based pipeline for memory processing instead of standalone system
+    from tools.api_integration import PipelineAPIIntegration
+    api_integration = PipelineAPIIntegration()
+    
+    # Prepare request for memory pipeline - unified flow
+    request_data = {
+        "target_type": "personal_memory",
+        "metadata": {
+            "user_id": user_id
+        },
+        "input": input_data
+        # Let orchestrator select appropriate pipeline automatically
+    }
+    
+    result = api_integration.process_request(request_data, [])
 
     response = APIResponse(
         status="success",
@@ -125,6 +227,79 @@ async def _process_json_for_personal_memory(
         data=result,
     )
     return JSONResponse(status_code=status.HTTP_200_OK, content=response.dict())
+
+
+async def _process_json_for_knowledge_graph(
+    input_data: Any, metadata: Dict[str, Any], process_strategy: Dict[str, Any]) -> JSONResponse:
+    """Process JSON input for knowledge graph using tool-based pipeline."""
+    topic_name = metadata.get("topic_name")
+    if not topic_name:
+        raise HTTPException(
+            status_code=400,
+            detail="`topic_name` is required in metadata for target_type 'knowledge_graph'.",
+        )
+
+    # Handle different input formats
+    if isinstance(input_data, str):
+        # Text content
+        content = input_data
+    elif isinstance(input_data, dict):
+        # JSON content
+        content = json.dumps(input_data)
+    else:
+        content = str(input_data)
+
+    # Create temporary file for processing
+    temp_dir = tempfile.mkdtemp(prefix="knowledge_json_")
+    try:
+        file_path = Path(temp_dir) / "input.json"
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        # Prepare request data for pipeline
+        request_data = {
+            "target_type": "knowledge_graph",
+            "metadata": metadata,
+            "process_strategy": process_strategy or {}
+        }
+
+        # Prepare file information
+        files = [{
+            "path": str(file_path),
+            "filename": "input.json",
+            "metadata": {}
+        }]
+
+        # Execute pipeline
+        result = api_integration.process_request(request_data, files)
+
+        # Create response
+        processed_doc = ProcessedDocument(
+            id=result.execution_id or str(uuid.uuid4()),
+            name="input.json",
+            file_path=str(file_path),
+            doc_link=metadata.get("link", "inline_input"),
+            file_type="json",
+            status="processing" if result.success else "failed",
+        )
+
+        response = APIResponse(
+            status="success" if result.success else "error",
+            message=result.message or "Processing completed",
+            data=processed_doc.model_dump(),
+        )
+
+        return JSONResponse(
+            status_code=status.HTTP_200_OK if result.success else status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content=response.model_dump()
+        )
+
+    finally:
+        # Clean up temporary directory
+        try:
+            shutil.rmtree(temp_dir)
+        except Exception as e:
+            logger.warning(f"Failed to clean up temp directory {temp_dir}: {e}")
 
 
 # --- Request Handlers ---
@@ -147,7 +322,8 @@ async def _handle_form_data(
 
     # Dispatch based on target_type for form-data
     if target_type == "knowledge_graph":
-        return await _process_file_for_knowledge_graph(file, metadata, process_strategy)
+        # Use new tool-based pipeline system
+        return await _process_file_with_pipeline(file, metadata, process_strategy)
     else:
         raise HTTPException(
             status_code=400,
@@ -183,6 +359,10 @@ async def _handle_json_data(request: Request) -> JSONResponse:
         # Dispatch based on target_type for JSON
         if target_type == "personal_memory":
             return await _process_json_for_personal_memory(
+                input_data, metadata, process_strategy
+            )
+        elif target_type == "knowledge_graph":
+            return await _process_json_for_knowledge_graph(
                 input_data, metadata, process_strategy
             )
         else:

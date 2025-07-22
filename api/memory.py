@@ -34,6 +34,18 @@ class MemoryRetrieveRequest(BaseModel):
     top_k: int = Field(10, description="Number of results to return")
 
 
+# class MemoryProcessRequest(BaseModel):
+#     """Request model for processing chat messages into memory."""
+
+#     chat_messages: List[Dict[str, Any]] = Field(
+#         ..., description="List of chat messages to process"
+#     )
+#     user_id: str = Field(..., description="User identifier")
+#     force_reprocess: bool = Field(
+#         False, description="Force reprocessing even if already processed"
+#     )
+
+
 def _get_memory_system() -> PersonalMemorySystem:
     """Get initialized PersonalMemorySystem instance."""
     llm_client = LLMInterface(LLM_PROVIDER, LLM_MODEL)
@@ -185,3 +197,127 @@ async def retrieve_memory(request: MemoryRetrieveRequest) -> JSONResponse:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to retrieve memory: {str(e)}",
         )
+
+
+# @router.post("/process", response_model=APIResponse)
+# async def process_memory(request: MemoryProcessRequest) -> JSONResponse:
+#     """
+#     Process chat messages into personal knowledge graph.
+
+#     ## Overview
+#     This endpoint processes chat history into structured personal memory using
+#     the pipeline-based architecture instead of standalone processing.
+
+#     ## Processing Flow
+
+#     1. **Validation**: Validates chat message format and user ID
+#     2. **Deduplication**: Checks for existing processing of identical content
+#     3. **Memory Processing**: Uses MemoryGraphBuildTool for integrated processing
+#     4. **Graph Building**: Extracts insights and builds knowledge graph
+#     5. **Result Storage**: Stores results in both memory and graph systems
+
+#     ## Chat Message Format
+
+#     Each message should contain:
+#     - `message_content`: The actual message text
+#     - `date`: ISO format timestamp (e.g., "2024-01-15T10:30:00Z")
+#     - `role`: Either "user" or "assistant"
+#     - `session_id`: (optional) Conversation session identifier
+#     - `conversation_title`: (optional) Title for the conversation
+
+#     ## Example Request
+
+#     ```json
+#     {
+#         "chat_messages": [
+#             {
+#                 "message_content": "I'm learning about distributed systems",
+#                 "session_id": "session_123",
+#                 "conversation_title": "Distributed Systems Study",
+#                 "date": "2024-01-15T10:00:00Z",
+#                 "role": "user"
+#             },
+#             {
+#                 "message_content": "That's great! Distributed systems are fascinating...",
+#                 "date": "2024-01-15T10:01:00Z",
+#                 "role": "assistant"
+#             }
+#         ],
+#         "user_id": "user_456",
+#         "force_reprocess": false
+#     }
+#     ```
+
+#     ## Example Response
+
+#     ```json
+#     {
+#         "status": "success",
+#         "message": "Successfully processed 2 messages for personal memory",
+#         "data": {
+#             "user_id": "user_456",
+#             "topic_name": "The personal information of user_456",
+#             "source_data_id": "sd_789",
+#             "knowledge_block_id": "kb_101",
+#             "entities_created": 5,
+#             "relationships_created": 8,
+#             "triplets_extracted": 12,
+#             "status": "completed"
+#         }
+#     }
+#     ```
+
+#     ## Processing Status
+
+#     - **completed**: Successfully processed and graph built
+#     - **already_processed**: Identical content already exists, reused existing data
+#     - **failed**: Processing failed with error details
+
+#     Args:
+#         request: Memory processing request with chat messages
+
+#     Returns:
+#         JSON response with processing results
+
+#     Raises:
+#         HTTPException: If processing fails
+#     """
+#     try:
+#         from tools.api_integration import PipelineAPIIntegration
+        
+#         api_integration = PipelineAPIIntegration()
+        
+#         # Unified pipeline flow: /api/v1/save → api_integration → orchestrator → MemoryGraphBuildTool
+#         request_data = {
+#             "target_type": "personal_memory",
+#             "metadata": {
+#                 "user_id": request.user_id
+#             },
+#             "input": request.chat_messages
+#         }
+        
+#         # Let orchestrator automatically select memory pipeline
+#         result = api_integration.process_request(request_data, [])
+        
+#         if not result.success:
+#             raise HTTPException(
+#                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+#                 detail=result.error_message or "Memory processing failed"
+#             )
+        
+#         response = APIResponse(
+#             status="success",
+#             message=f"Successfully processed {len(request.chat_messages)} messages for personal memory",
+#             data=result.data,
+#         )
+
+#         return JSONResponse(status_code=status.HTTP_200_OK, content=response.dict())
+
+#     except Exception as e:
+#         logger.error(
+#             f"Error processing memory for user {request.user_id}: {e}", exc_info=True
+#         )
+#         raise HTTPException(
+#             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+#             detail=f"Failed to process memory: {str(e)}",
+#         )
