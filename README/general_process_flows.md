@@ -4,6 +4,7 @@
 
 ### Updated Memory Flow Architecture (Tool-Based)
 
+#### Overall Architecture
 ```
 POST /api/v1/save (JSON)
     ↓
@@ -19,7 +20,7 @@ PipelineOrchestrator.execute_pipeline() → ["memory_graph_build"]
     ↓
 MemoryGraphBuildTool.execute()
     ↓
-PersonalMemorySystem.process_chat_batch() [direct processing]
+PersonalMemorySystem.process_chat_batch() [modified GraphBuild]
     ├─ _store_chat_batch_as_source() 
     ├─ _create_summary_knowledge_block() 
     ├─ create_personal_blueprint()  
@@ -27,6 +28,49 @@ PersonalMemorySystem.process_chat_batch() [direct processing]
         └─ GraphBuildTool._process_single_document()
     ↓
 Graph triplets in database
+```
+
+#### Detailed Architecture
+```
+POST /api/v1/save (JSON)
+    ↓
+api/ingest.py:_handle_json_data() [lines 1-191]
+    ↓
+api/ingest.py:_process_json_for_personal_memory() [lines 192-229]
+    ├─ Validates user_id presence: metadata.get("user_id")
+    ├─ Validates input_data type: isinstance(input_data, list)
+    └─ PipelineAPIIntegration.process_request() [tools/api_integration.py]
+        └─ Prepares unified request: {"target_type": "personal_memory", "metadata": {"user_id": user_id}, "input": chat_messages}
+            ↓
+PipelineOrchestrator.select_default_pipeline() → "memory_direct_graph" [tools/orchestrator.py]
+    └─ Decision logic: if target_type == "personal_memory" → "memory_direct_graph"
+        ↓
+PipelineOrchestrator.execute_pipeline() → ["memory_graph_build"] [tools/orchestrator.py]
+    └─ Tool sequence: ["memory_graph_build"]
+        ↓
+MemoryGraphBuildTool.execute() [tools/memory_graph_build_tool.py:101-227]
+    ├─ Input validation: chat_messages, user_id, force_reprocess
+    ├─ Deduplication check: _check_existing_processing() [lines 229-277]
+    │   └─ Content hash generation: hashlib.sha256(json.dumps(chat_messages, sort_keys=True))
+    ├─ PersonalMemorySystem initialization: PersonalMemorySystem(llm_client, embedding_func, session_factory)
+    ├─ Memory processing: memory_system.process_chat_batch() [memory_system.py:165-220]
+    │   ├─ _store_chat_batch_as_source() [memory_system.py:222-327]
+    │   │   ├─ ContentStore creation: ContentStore(content_hash, content_json)
+    │   │   ├─ SourceData creation: SourceData(name, link, source_type, attributes)
+    │   │   └─ Deduplication: Check existing SourceData by link/content_hash
+    │   ├─ _create_summary_knowledge_block() [memory_system.py:329-457]
+    │   │   ├─ LLM summary generation: llm_client.generate(summary_prompt, max_tokens=4096)
+    │   │   ├─ KnowledgeBlock creation: KnowledgeBlock(name, knowledge_type, content, content_vec)
+    │   │   └─ BlockSourceMapping creation: BlockSourceMapping(block_id, source_id)
+    │   ├─ create_personal_blueprint() [memory_system.py:459-497]
+    │   │   └─ AnalysisBlueprint creation: AnalysisBlueprint(topic_name, processing_instructions)
+    │   └─ _build_graph_from_memory() [memory_system.py:499-580]
+    │       ├─ GraphBuildTool initialization: GraphBuildTool(session_factory, llm_client, embedding_func)
+    │       ├─ Blueprint retrieval: AnalysisBlueprint.query.filter_by(topic_name)
+    │       └─ Graph processing: graph_tool._process_single_document(blueprint_id, source_data_id)
+    └─ Result aggregation: Combines memory and graph results
+        ↓
+Graph triplets in database [final storage]
 ```
 
 ### Detailed Flow Functions
@@ -95,6 +139,7 @@ Content-Type: application/json
 
 ### Document Processing Architecture
 
+#### Overall Architecture
 ```
 POST /api/v1/save (multipart/form-data or JSON)
     ↓
@@ -111,6 +156,60 @@ PipelineOrchestrator.execute_pipeline() → [tool sequence]
 DocumentETLTool → BlueprintGenerationTool (if needed) → GraphBuildTool
     ↓
 Graph triplets in database
+```
+
+#### Detailed Architecture
+```
+POST /api/v1/save (multipart/form-data or JSON)
+    ↓
+api/ingest.py:_handle_form_data() [lines 308-336] OR _handle_json_data() [lines 1-191]
+    ├─ Content-Type detection: multipart/form-data vs application/json
+    ├─ Metadata extraction: json.loads(metadata_str)
+    └─ Route dispatch: target_type == "knowledge_graph" → _process_file_with_pipeline()/_process_json_for_knowledge_graph()
+        ↓
+api/ingest.py:_process_file_with_pipeline() [lines 37-116] OR _process_json_for_knowledge_graph() [lines 232-303]
+    ├─ File validation: UploadFile validation and temp storage
+    ├─ Strategy preparation: {"is_new_topic": ..., "file_count": ...}
+    └─ PipelineAPIIntegration.process_request() [tools/api_integration.py]
+        └─ Unified request: {"target_type": "knowledge_graph", "metadata": metadata, "process_strategy": strategy}
+            ↓
+PipelineOrchestrator.select_default_pipeline() [tools/orchestrator.py:172-181]
+    ├─ Decision tree based on input parameters:
+    │   ├─ if is_new_topic == true → "new_topic_batch"
+    │   ├─ elif file_count == 1 → "single_doc_existing_topic"
+    │   └─ else → "batch_doc_existing_topic"
+    └─ Returns appropriate pipeline key
+        ↓
+PipelineOrchestrator.execute_pipeline() [tools/orchestrator.py]
+    └─ Tool sequence execution based on pipeline type:
+        ├─ "single_doc_existing_topic": ["etl", "graph_build"]
+        ├─ "batch_doc_existing_topic": ["etl", "blueprint_gen", "graph_build"]
+        └─ "new_topic_batch": ["etl", "blueprint_gen", "graph_build"]
+            ↓
+DocumentETLTool.execute() [tools/document_etl_tool.py:143-320]
+    ├─ Input validation: file_path existence, topic_name format
+    ├─ File processing: extract_source_data(str(file_path)) [etl/extract.py]
+    ├─ ContentStore management: ContentStore(content_hash, content, content_type)
+    ├─ SourceData creation: SourceData(name, topic_name, raw_data_source_id, attributes)
+    └─ Status tracking: raw_data_source.status updates (pending → etl_processing → etl_completed)
+        ↓
+BlueprintGenerationTool.execute() [tools/blueprint_generation_tool.py:145-326] (conditional)
+    ├─ Source data aggregation: query SourceData by topic_name
+    ├─ Version hash calculation: hashlib.sha256("|".join(source_data_versions))
+    ├─ Cognitive map generation: cm_generator.batch_generate_cognitive_maps()
+    ├─ Blueprint creation: graph_builder.generate_analysis_blueprint()
+    └─ AnalysisBlueprint updates: status, processing_instructions, source_data_version_hash
+        ↓
+GraphBuildTool.execute() [tools/graph_build_tool.py:162-221]
+    ├─ Mode selection: single document vs batch processing
+    ├─ Document processing: _process_document_with_blueprint() [lines 444-533]
+    │   ├─ Document conversion: _convert_source_data_to_document() [lines 535-552]
+    │   ├─ Cognitive map retrieval: cm_generator.get_cognitive_maps_for_topic()
+    │   ├─ Triplet extraction: graph_builder.extract_triplets_from_document()
+    │   └─ Graph persistence: graph_builder.convert_triplets_to_graph()
+    └─ Status updates: SourceData.status (graph_processing → graph_completed/failed)
+        ↓
+Graph triplets in database [final storage]
 ```
 
 ### Document Processing Scenarios Flow
