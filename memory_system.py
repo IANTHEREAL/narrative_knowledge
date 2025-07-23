@@ -11,9 +11,9 @@ from knowledge_graph.models import (
     KnowledgeBlock,
     AnalysisBlueprint,
     BlockSourceMapping,
-    ContentStore,
-    GraphBuild,
+    ContentStore
 )
+# from knowledge_graph.graph_builder_daemon import GraphBuild  # NOW using tool-based processing
 from etl.knowledge import KnowledgeBuilder
 from knowledge_graph.graph import NarrativeKnowledgeGraphBuilder
 from setting.db import db_manager
@@ -202,8 +202,8 @@ class PersonalMemorySystem:
         # Step 3: create personal blueprint
         self.create_personal_blueprint(user_id, topic_name)
 
-        # Step 4: Create GraphBuild record for background processing
-        build_id = self._create_graph_build_task(
+        # Step 4: Build graph directly using tool-based processing (replacing GraphBuild daemon)
+        graph_result = self._build_graph_from_memory(
             source_data, user_id, topic_name
         )
 
@@ -211,7 +211,10 @@ class PersonalMemorySystem:
             "status": "success",
             "source_id": source_data["id"],
             "knowledge_block_id": knowledge_block["id"],
-            "build_id": build_id,
+            "build_id": graph_result["build_id"],
+            "entities_created": graph_result["entities_created"],
+            "relationships_created": graph_result["relationships_created"],
+            "triplets_extracted": graph_result["triplets_extracted"],
             "summary": knowledge_block["content"],
             "topic_name": topic_name,
         }
@@ -493,17 +496,17 @@ Generate a concise narrative summary that captures the essence of this conversat
             logger.info(f"Created personal memory blueprint for user {user_id}")
             return blueprint
 
-    def _create_graph_build_task(
+    def _build_graph_from_memory(
         self,
         source_data: Dict,
         user_id: str,
         topic_name: str
-    ) -> str:
+    ) -> Dict[str, Any]:
         """
-        Create a background processing task for chat batch.
+        Build knowledge graph directly from memory data using tool-based processing.
 
-        This function creates a GraphBuild record that will be picked up
-        by the GraphBuildDaemon for asynchronous graph processing.
+        This method replaces the old GraphBuild background task system with direct
+        tool-based graph building for memory processing.
 
         Args:
             source_data: Source data object containing chat batch info
@@ -511,68 +514,69 @@ Generate a concise narrative summary that captures the essence of this conversat
             topic_name: Topic name for memory categorization
 
         Returns:
-            Generated build_id for the task
-
-        Raises:
-            Exception: If task creation fails
+            Dict with graph building results
         """
         try:
-            # Generate build_id for chat batch using the actual source link
-            # The source_data contains the actual chat_link used to store the batch
+            # Import here to avoid circular dependencies
+            from tools.graph_build_tool import GraphBuildTool
+            
+            # Generate build_id for tracking
             with self.SessionLocal() as db:
                 source_record = db.query(SourceData).filter(SourceData.id == source_data["id"]).first()
                 if not source_record:
                     raise Exception(f"Source data not found with id: {source_data['id']}")
                 
                 chat_batch_link = source_record.link
-            # Use empty string for external_db_uri for local mode
+            
             external_db_uri = ""
             build_id = _generate_build_id_for_chat_batch(
                 chat_batch_link, external_db_uri
             )
-
-            # Create task record in local database only
-            # All task scheduling is centralized in local database
+            
+            # Get the personal blueprint for this user
             with self.SessionLocal() as db:
-                # Check if GraphBuild already exists for this build_id
-                existing_build_status = (
-                    db.query(GraphBuild)
-                    .filter(
-                        GraphBuild.build_id == build_id,
-                        GraphBuild.topic_name == topic_name,
-                        GraphBuild.external_database_uri == external_db_uri,
-                    )
-                    .first()
-                )
-
-                if existing_build_status:
-                    logger.info(
-                        f"Graph build task already exists for build_id: {build_id}, updating status to pending"
-                    )
-                    existing_build_status.status = "pending"
-                    db.commit()
-                    db.refresh(existing_build_status)
-                    return build_id
-
-                # Create new GraphBuild record
-                build_status = GraphBuild(
-                    topic_name=topic_name,
-                    build_id=build_id,
-                    external_database_uri=external_db_uri,
-                    storage_directory=f"memory://{user_id}/chat_batch/",  # Virtual storage for memory
-                    doc_link=chat_batch_link,
-                    status="pending",
-                )
-                db.add(build_status)
-                db.commit()
-
+                blueprint = db.query(AnalysisBlueprint).filter(
+                    AnalysisBlueprint.topic_name == topic_name
+                ).order_by(AnalysisBlueprint.created_at.desc()).first()
+                
+                if not blueprint:
+                    raise Exception(f"No personal blueprint found for topic: {topic_name}")
+            
+            # Use GraphBuildTool for direct graph building
+            graph_tool = GraphBuildTool(
+                session_factory=self.SessionLocal,
+                llm_client=self.llm_client,
+                embedding_func=self.embedding_func
+            )
+            
+            # Process the source data directly
+            result = graph_tool._process_single_document(
+                blueprint_id=blueprint.id,
+                source_data_id=source_data["id"],
+                force_reprocess=False
+            )
+            
+            if result.success:
                 logger.info(
-                    f"Created graph build task for chat batch: {build_id} (user: {user_id})"
+                    f"Successfully built graph for memory batch: {build_id} (user: {user_id})"
                 )
-                return build_id
+                return {
+                    "build_id": build_id,
+                    "entities_created": result.data.get("entities_created", 0),
+                    "relationships_created": result.data.get("relationships_created", 0),
+                    "triplets_extracted": result.data.get("triplets_extracted", 0),
+                    "status": "completed"
+                }
+            else:
+                logger.error(f"Graph building failed for memory batch: {result.error_message}")
+                return {
+                    "build_id": build_id,
+                    "status": "failed",
+                    "error": result.error_message
+                }
 
         except Exception as e:
-            logger.error(f"Failed to create graph build task for chat batch: {e}")
+            logger.error(f"Failed to build graph from memory: {e}")
             raise
 
     def retrieve_user_memory(
