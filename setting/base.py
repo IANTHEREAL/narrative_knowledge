@@ -12,6 +12,11 @@ GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 
+# need 4096 dimension embedding for knowledge graph, fix it later
+EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "hf.co/Qwen/Qwen3-Embedding-8B-GGUF:Q8_0")
+EMBEDDING_BASE_URL = os.environ.get("EMBEDDING_BASE_URL", "http://localhost:11434/v1/")
+EMBEDDING_MODEL_API_KEY = os.environ.get("EMBEDDING_MODEL_API_KEY", "ollama")
+
 # DB settings
 DATABASE_URI = os.environ.get("DATABASE_URI")
 SESSION_POOL_SIZE: int = os.environ.get("SESSION_POOL_SIZE", 40)

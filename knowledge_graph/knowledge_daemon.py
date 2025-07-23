@@ -1,5 +1,5 @@
 """
-Background daemon for processing pending graph build tasks.
+Background daemon for processing pending knowledge extraction tasks.
 """
 
 import time
@@ -21,9 +21,9 @@ from llm.embedding import get_text_embedding
 logger = logging.getLogger(__name__)
 
 
-class GraphBuildDaemon:
+class KnowledgeExtractionDaemon:
     """
-    Background daemon for processing pending graph build tasks.
+    Background daemon for processing pending knowledge extraction tasks.
     """
 
     def __init__(
@@ -31,10 +31,9 @@ class GraphBuildDaemon:
         llm_client: Optional[LLMInterface] = None,
         embedding_func=None,
         check_interval: int = 60,
-        worker_count: int = 5,
     ):
         """
-        Initialize the graph build daemon.
+        Initialize the knowledge extraction daemon.
 
         Args:
             llm_client: LLM interface for processing
@@ -45,12 +44,11 @@ class GraphBuildDaemon:
         self.embedding_func = embedding_func or get_text_embedding
         self.check_interval = check_interval
         self.is_running = False
-        self.worker_count = worker_count
 
     def start(self):
         """Start the daemon."""
         self.is_running = True
-        logger.info("Graph build daemon started")
+        logger.info("Knowledge extraction daemon started")
 
         while self.is_running:
             try:
@@ -63,17 +61,17 @@ class GraphBuildDaemon:
     def stop(self):
         """Stop the daemon."""
         self.is_running = False
-        logger.info("Graph build daemon stopped")
+        logger.info("Knowledge extraction daemon stopped")
 
     def _process_pending_tasks(self):
-        """Process the earliest pending graph build topic."""
+        """Process the earliest pending knowledge extraction task."""
         # Step 1: Find earliest task and prepare data (inside db session)
         task_info = self._prepare_task_build()
         if not task_info:
             return
 
-        # Step 2: Process the build graph
-        logger.info(f"Start to process the build graph: {task_info["topic_name"]}")
+        # Step 2: Process the knowledge extraction
+        logger.info(f"Start to process knowledge extraction: {task_info["topic_name"]}")
         topic_name = task_info["topic_name"]
         external_database_uri = task_info["external_database_uri"]
         task_data = task_info["task_data"]
@@ -340,7 +338,7 @@ class GraphBuildDaemon:
 
         except Exception as e:
             logger.error(f"Failed to update final task status: {e}", exc_info=True)
-            # Don't raise here as the graph building itself might have succeeded
+            # Don't raise here as the knowledge extraction itself might have succeeded
 
     def get_daemon_status(self) -> Dict:
         """
@@ -399,7 +397,7 @@ class GraphBuildDaemon:
     def _process_task(self, task_info: Dict, external_database_uri: str):
         """
         Process tasks from storage directories.
-        First performs knowledge extraction, then graph building.
+        Only performs knowledge extraction, then marks as completed.
         """
         topic_name = task_info["topic_name"]
         external_database_uri = task_info["external_database_uri"]
@@ -408,15 +406,15 @@ class GraphBuildDaemon:
         if db_manager.is_local_mode(external_database_uri):
             session_factory = SessionLocal
             logger.info(
-                f"Starting local knowledge extraction and graph build for topic: {topic_name}"
+                f"Starting local knowledge extraction for topic: {topic_name}"
             )
         else:
             session_factory = db_manager.get_session_factory(external_database_uri)
             logger.info(
-                f"Starting external knowledge extraction and graph build for topic: {topic_name}"
+                f"Starting external knowledge extraction for topic: {topic_name}"
             )
 
-        # Step 1: Extract knowledge from documents
+        # Extract knowledge from documents
         extracted_sources = []
         failed_extractions = []
 
@@ -480,26 +478,15 @@ class GraphBuildDaemon:
             error_messages = "; ".join([item["error"] for item in failed_extractions])
             raise Exception(f"Knowledge extraction failed: {error_messages}")
 
-        # Continue with graph building if we have successful extractions
+        # Check if we have successful extractions
         if not extracted_sources:
             error_msg = (
                 "No documents were successfully processed for knowledge extraction"
             )
             raise Exception(error_msg)
 
-        # Step 2: Build knowledge graph from extracted sources
+        # Mark all successful extractions as completed
         try:
-            logger.info(
-                f"Building knowledge graph for topic: {topic_name} with {len(extracted_sources)} sources"
-            )
-
-            graph_builder = KnowledgeGraphBuilder(
-                self.llm_client, self.embedding_func, session_factory, self.worker_count
-            )
-            result = graph_builder.build_knowledge_graph(topic_name, extracted_sources)
-
-            # Update successful tasks to completed status
-            # Use the consistent build_ids from successful extractions
             completed_build_ids = [
                 source["build_id"] for source in extracted_sources
             ]
@@ -509,12 +496,12 @@ class GraphBuildDaemon:
             )
 
             logger.info(
-                f"Successfully completed knowledge extraction and graph build for topic: {topic_name}"
+                f"Successfully completed knowledge extraction for topic: {topic_name}"
             )
-            logger.info(f"Build results: {result}")
+            logger.info(f"Extracted {len(extracted_sources)} sources for graph building")
 
         except Exception as e:
-            error_msg = f"Graph building failed: {str(e)}"
+            error_msg = f"Failed to update task status: {str(e)}"
             logger.error(error_msg, exc_info=True)
 
             failed_build_ids = [
@@ -527,3 +514,7 @@ class GraphBuildDaemon:
                 "failed",
                 error_msg,
             )
+
+
+# Alias for backward compatibility
+GraphBuildDaemon = KnowledgeExtractionDaemon

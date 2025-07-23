@@ -51,6 +51,172 @@ class ContentStore(Base):
         return f"<ContentStore(hash={self.content_hash[:8]}...)>"
 
 
+class SourceData(Base):
+    """Source document entity - serves as data source for knowledge extraction"""
+
+    __tablename__ = "source_data"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name = Column(String(255), nullable=False)
+
+    # Reference to deduplicated content
+    content_hash = Column(
+        String(64), ForeignKey("content_store.content_hash"), nullable=True
+    )
+    link = Column(String(512), nullable=True)
+
+    source_type = Column(String(50), nullable=False, default="text/plain")
+    attributes = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=func.current_timestamp())
+    updated_at = Column(
+        DateTime, default=func.current_timestamp(), onupdate=func.current_timestamp()
+    )
+
+    # Relationships
+    content_store = relationship("ContentStore", back_populates="source_data_entries")
+    block_mappings = relationship(
+        "BlockSourceMapping", back_populates="source", cascade="all, delete-orphan"
+    )
+    graph_mappings = relationship(
+        "SourceGraphMapping", back_populates="source", cascade="all, delete-orphan"
+    )
+
+    # Content access properties
+    @property
+    def effective_content(self):
+        """Get content from content_store"""
+        if self.content_store:
+            return self.content_store.content
+        return None
+
+    @property
+    def effective_hash(self):
+        """Get content hash from content_hash field"""
+        return self.content_hash
+
+    __table_args__ = (
+        Index("uq_source_data_link", "link", unique=True),
+        Index("idx_source_data_name", "name"),
+        Index("idx_source_data_type", "source_type"),
+        Index("idx_source_data_content_hash", "content_hash"),
+        Index("idx_source_data_link_time", "link", "created_at"),
+    )
+
+    def __repr__(self):
+        return f"<SourceData(id={self.id}, name={self.name}, link={self.link})>"
+
+
+class BlockSourceMapping(Base):
+    """Mapping table for KnowledgeBlock ↔ SourceData relationships"""
+
+    __tablename__ = "block_source_mapping"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    block_id = Column(String(36), ForeignKey("knowledge_blocks.id"), nullable=False)
+    source_id = Column(String(36), ForeignKey("source_data.id"), nullable=False)
+    position_in_source = Column(BigInteger, default=0)  # Position within source
+    created_at = Column(DateTime, default=func.current_timestamp())
+    updated_at = Column(
+        DateTime, default=func.current_timestamp(), onupdate=func.current_timestamp()
+    )
+
+    # Relationships
+    block = relationship("KnowledgeBlock", back_populates="source_mappings")
+    source = relationship("SourceData", back_populates="block_mappings")
+
+    __table_args__ = (
+        Index("idx_block_source_mapping_block_id", "block_id"),
+        Index("idx_block_source_mapping_source_id", "source_id"),
+        Index(
+            "uq_block_source_mapping_block_source", "block_id", "source_id", unique=True
+        ),
+    )
+
+    def __repr__(self):
+        return f"<BlockSourceMapping(block={self.block_id}, source={self.source_id})>"
+
+
+class SourceGraphMapping(Base):
+    """Mapping table for SourceData ↔ (Entity/Relationship) relationships"""
+
+    __tablename__ = "source_graph_mapping"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    source_id = Column(String(36), ForeignKey("source_data.id"), nullable=False)
+    graph_element_id = Column(
+        String(36), nullable=False
+    )  # entity_id or relationship_id
+    graph_element_type = Column(Enum("entity", "relationship"), nullable=False)
+    attributes = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=func.current_timestamp())
+    updated_at = Column(
+        DateTime, default=func.current_timestamp(), onupdate=func.current_timestamp()
+    )
+
+    # Relationships
+    source = relationship("SourceData", back_populates="graph_mappings")
+
+    __table_args__ = (
+        Index("idx_source_graph_mapping_source_id", "source_id"),
+        Index(
+            "idx_source_graph_mapping_element", "graph_element_type", "graph_element_id"
+        ),
+    )
+
+    def __repr__(self):
+        return f"<SourceGraphMapping(source={self.source_id}, element={self.graph_element_type}:{self.graph_element_id})>"
+
+
+class KnowledgeBlock(Base):
+    """Core graph node - represents atomic knowledge units"""
+
+    __tablename__ = "knowledge_blocks"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name = Column(String(512), nullable=False)
+    knowledge_type = Column(
+        Enum(
+            "qa",
+            "paragraph",
+            "synopsis",
+            "image",
+            "video",
+            "code",
+            "chat_summary",
+            "chat_content",
+        ),
+        nullable=False,
+    )
+    content = Column(LONGTEXT, nullable=True)
+    context = Column(Text, nullable=True)
+    # fixed 4096 dimension embedding for knowledge graph, fix it later
+    content_vec = Column(VectorType(4096), nullable=True)
+    hash = Column(
+        String(64),
+        nullable=False,
+        unique=True,
+        comment="SHA-256 hash for deduplication",
+    )
+    attributes = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=func.current_timestamp())
+    updated_at = Column(
+        DateTime, default=func.current_timestamp(), onupdate=func.current_timestamp()
+    )
+
+    # Relationships
+    source_mappings = relationship(
+        "BlockSourceMapping", back_populates="block", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        Index("idx_knowledge_blocks_knowledge_type", "knowledge_type"),
+        Index("idx_knowledge_blocks_name", "name"),
+    )
+
+    def __repr__(self):
+        return f"<KnowledgeBlock(id={self.id}, name={self.name}, type={self.knowledge_type})>"
+
+
 class Entity(Base):
     """High-level entity node - represents abstract knowledge entities"""
 
@@ -59,6 +225,7 @@ class Entity(Base):
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     name = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
+    # fixed 4096 dimension embedding for knowledge graph, fix it later
     description_vec = Column(VectorType(4096), nullable=True)
     attributes = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=func.current_timestamp())
@@ -81,6 +248,7 @@ class Relationship(Base):
     source_entity_id = Column(String(36), ForeignKey("entities.id"), nullable=False)
     target_entity_id = Column(String(36), ForeignKey("entities.id"), nullable=False)
     relationship_desc = Column(Text, nullable=True)
+    # fixed 4096 dimension embedding for knowledge graph, fix it later
     relationship_desc_vec = Column(VectorType(4096), nullable=True)
     attributes = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=func.current_timestamp())
