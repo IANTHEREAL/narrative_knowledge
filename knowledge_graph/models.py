@@ -44,15 +44,62 @@ class ContentStore(Base):
     def __repr__(self):
         return f"<ContentStore(hash={self.content_hash[:8]}...)>"
 
+class RawDataSource(Base):
+    """Raw data source - represents uploaded files before ETL processing"""
+
+    __tablename__ = "raw_data_sources"
+
+    id = Column(String(64), primary_key=True, default=lambda: str(uuid.uuid4()))
+    build_id = Column(String(64), nullable=False,index=True)
+    file_path = Column(String(512), nullable=False)
+    original_filename = Column(String(255), nullable=False)
+    topic_name = Column(String(255), nullable=False)  # Key attribute for grouping
+    target_type = Column(String(50), nullable=False, default="knowledge_graph")  # 'knowledge_graph' or 'personal_memory'
+    process_strategy = Column(JSON, nullable=True)  # Processing strategy JSON
+    file_hash = Column(String(64), nullable=False)  # SHA-256 hash of file content
+    raw_data_source_metadata = Column(JSON, nullable=True)  # Custom metadata from upload
+    
+    # Status tracking for ETL processing
+    status = Column(
+        Enum("uploaded", "etl_pending", "etl_processing", "etl_completed", "etl_failed"),
+        nullable=False,
+        default="uploaded",
+    )
+    error_message = Column(Text, nullable=True)
+    
+    created_at = Column(DateTime, default=func.current_timestamp())
+    updated_at = Column(
+        DateTime, default=func.current_timestamp(), onupdate=func.current_timestamp()
+    )
+
+    # Relationships
+    source_data_entries = relationship("SourceData", back_populates="raw_data_source")
+
+    __table_args__ = (
+        Index("idx_raw_data_topic", "topic_name"),
+        Index("idx_raw_data_status", "status"),
+        Index("idx_raw_data_hash", "file_hash"),
+        Index("idx_raw_data_topic_status", "topic_name", "status"),
+    )
+
+    def __repr__(self):
+        return f"<RawDataSource(id={self.id}, filename={self.original_filename}, topic={self.topic_name}, status={self.status})>"
+
 
 class SourceData(Base):
-    """Source document entity - serves as data source for knowledge extraction"""
+    """Source document entity - ETL processed data ready for graph building"""
 
     __tablename__ = "source_data"
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     name = Column(String(255), nullable=False)
+    topic_name = Column(String(255), nullable=False)  # Key attribute for grouping
 
+    # Reference to raw data source
+    raw_data_source_id = Column(
+        String(64), ForeignKey("raw_data_sources.id"), nullable=True
+    )
+    
     # Reference to deduplicated content
     content_hash = Column(
         String(64), ForeignKey("content_store.content_hash"), nullable=True
@@ -61,12 +108,21 @@ class SourceData(Base):
 
     source_type = Column(String(50), nullable=False, default="text/plain")
     attributes = Column(JSON, nullable=True)
+    
+    # Status tracking for graph building
+    status = Column(
+        Enum("created", "updated", "graph_pending", "graph_processing", "graph_completed", "graph_failed", "blocks_processing", "blocks_completed", "blocks_failed"),
+        nullable=False,
+        default="created",
+    )
+    
     created_at = Column(DateTime, default=func.current_timestamp())
     updated_at = Column(
         DateTime, default=func.current_timestamp(), onupdate=func.current_timestamp()
     )
 
     # Relationships
+    raw_data_source = relationship("RawDataSource", back_populates="source_data_entries")
     content_store = relationship("ContentStore", back_populates="source_data_entries")
     block_mappings = relationship(
         "BlockSourceMapping", back_populates="source", cascade="all, delete-orphan"
@@ -89,15 +145,20 @@ class SourceData(Base):
         return self.content_hash
 
     __table_args__ = (
-        Index("uq_source_data_link", "link", unique=True),
+        Index("uq_source_data_link", "link"),
         Index("idx_source_data_name", "name"),
-        Index("idx_source_data_type", "source_type"),
+        Index("idx_source_data_topic", "topic_name"),
+        Index("idx_source_data_status", "status"),
+        # Index("idx_source_data_type", "source_type"),
         Index("idx_source_data_content_hash", "content_hash"),
-        Index("idx_source_data_link_time", "link", "created_at"),
+        # Index("idx_source_data_link_time", "link", "created_at"),
+        Index("idx_source_data_topic_status", "topic_name", "status"),
+        Index("idx_source_data_raw_id", "raw_data_source_id"),
     )
 
     def __repr__(self):
-        return f"<SourceData(id={self.id}, name={self.name}, link={self.link})>"
+        return f"<SourceData(id={self.id}, name={self.name}, topic={self.topic_name}, status={self.status})>"
+        # return f"<SourceData(id={self.id}, name={self.name}, link={self.link})>"
 
 
 class BlockSourceMapping(Base):
@@ -119,15 +180,13 @@ class BlockSourceMapping(Base):
     source = relationship("SourceData", back_populates="block_mappings")
 
     __table_args__ = (
-        Index("idx_block_source_mapping_block_id", "block_id"),
-        Index("idx_block_source_mapping_source_id", "source_id"),
-        Index(
-            "uq_block_source_mapping_block_source", "block_id", "source_id", unique=True
-        ),
+        Index("uq_block_source_mapping", "block_id", "source_id", unique=True),
+        Index("idx_block_source_mapping_block", "block_id"),
+        Index("idx_block_source_mapping_source", "source_id"),
     )
 
     def __repr__(self):
-        return f"<BlockSourceMapping(block={self.block_id}, source={self.source_id})>"
+        return f"<BlockSourceMapping(block_id={self.block_id}, source_id={self.source_id})>"
 
 
 class SourceGraphMapping(Base):
@@ -151,14 +210,20 @@ class SourceGraphMapping(Base):
     source = relationship("SourceData", back_populates="graph_mappings")
 
     __table_args__ = (
-        Index("idx_source_graph_mapping_source_id", "source_id"),
+        Index("idx_source_graph_mapping_source", "source_id"),
+        Index("idx_source_graph_mapping_element", "graph_element_id"),
+        Index("idx_source_graph_mapping_type", "graph_element_type"),
         Index(
-            "idx_source_graph_mapping_element", "graph_element_type", "graph_element_id"
+            "uq_source_graph_mapping",
+            "source_id",
+            "graph_element_id",
+            "graph_element_type",
+            unique=True,
         ),
     )
 
     def __repr__(self):
-        return f"<SourceGraphMapping(source={self.source_id}, element={self.graph_element_type}:{self.graph_element_id})>"
+        return f"<SourceGraphMapping(source_id={self.source_id}, element_id={self.graph_element_id}, type={self.graph_element_type})>"
 
 
 class KnowledgeBlock(Base):
@@ -203,7 +268,8 @@ class KnowledgeBlock(Base):
     )
 
     __table_args__ = (
-        Index("idx_knowledge_blocks_knowledge_type", "knowledge_type"),
+        Index("idx_knowledge_blocks_hash", "hash"),
+        Index("idx_knowledge_blocks_type", "knowledge_type"),
         Index("idx_knowledge_blocks_name", "name"),
     )
 
@@ -255,12 +321,13 @@ class Relationship(Base):
     target_entity = relationship("Entity", foreign_keys=[target_entity_id])
 
     __table_args__ = (
-        Index("idx_relationships_source_entity_id", "source_entity_id"),
-        Index("idx_relationships_target_entity_id", "target_entity_id"),
+        Index("idx_relationships_source", "source_entity_id"),
+        Index("idx_relationships_target", "target_entity_id"),
+        Index("idx_relationships_pair", "source_entity_id", "target_entity_id"),
     )
 
     def __repr__(self):
-        return f"<Relationship(source={self.source_entity_id}, target={self.target_entity_id}, desc={self.relationship_desc})>"
+        return f"<Relationship(id={self.id}, source={self.source_entity_id}, target={self.target_entity_id})>"
 
 
 class AnalysisBlueprint(Base):
@@ -269,6 +336,8 @@ class AnalysisBlueprint(Base):
 
     Simple design that can accommodate any future cognitive architecture changes
     without requiring schema modifications.
+
+    Analysis blueprint for a specific topic - generated from multiple source documents
     """
 
     __tablename__ = "analysis_blueprints"
@@ -284,15 +353,31 @@ class AnalysisBlueprint(Base):
         Text, nullable=True
     )  # Human-readable processing guidance
 
+    # Status tracking for blueprint generation
+    status = Column(
+        Enum("outdated", "generating", "ready", "failed"),
+        nullable=False,
+        default="outdated",
+    )
+    # Track which source data contributed to this blueprint
+    contributing_source_data_ids = Column(JSON, nullable=False)  # List of source_data IDs
+    source_data_version_hash = Column(String(64), nullable=True)  # Hash of source data versions
+    error_message = Column(Text, nullable=True)
+
     created_at = Column(DateTime, default=func.current_timestamp())
     updated_at = Column(
         DateTime, default=func.current_timestamp(), onupdate=func.current_timestamp()
     )
 
-    __table_args__ = (Index("idx_analysis_blueprints_topic_name", "topic_name"),)
+    __table_args__ = (
+        Index("idx_analysis_blueprints_topic_name", "topic_name"),
+        Index("idx_analysis_blueprints_status", "status"),
+        Index("idx_analysis_blueprints_topic_status", "topic_name", "status"),
+        Index("uq_analysis_blueprints_topic", "topic_name", unique=True),
+    )
 
     def __repr__(self):
-        return f"<AnalysisBlueprint(topic={self.topic_name}, created_at={self.created_at})>"
+        return f"<AnalysisBlueprint(id={self.id}, topic={self.topic_name}, status={self.status})>"
 
 
 class DocumentSummary(Base):
@@ -372,3 +457,51 @@ class GraphBuild(Base):
 
     def __repr__(self):
         return f"<GraphBuild(topic={self.topic_name}, source={self.build_id}, status={self.status})>"
+
+
+class BackgroundTask(Base):
+    """Background task tracking for async processing across workers"""
+
+    __tablename__ = "background_tasks"
+    id = Column(String(64), primary_key=True, default=lambda: str(uuid.uuid4()))
+    task_id = Column(String(64), nullable=False)
+    task_type = Column(String(50), nullable=False)  # 'memory_processing', 'file_processing'
+    source_id = Column(String(36), nullable=True)   # Related source_data ID
+    user_id = Column(String(255), nullable=True)    # For personal memory
+    topic_name = Column(String(255), nullable=True)
+    status = Column(
+        Enum("processing", "completed", "failed"),
+        nullable=False,
+        default="processing",
+    )
+    message_count = Column(BigInteger, nullable=True)   # Chat messages count, or files count
+    result = Column(JSON, nullable=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=func.current_timestamp())
+    updated_at = Column(
+        DateTime, default=func.current_timestamp(), onupdate=func.current_timestamp()
+    )
+
+    __table_args__ = (
+        Index("idx_background_tasks_source", "source_id"),
+        Index("idx_background_tasks_user", "user_id"),
+        Index("idx_background_tasks_status", "status"),
+        Index("idx_background_tasks_created", "created_at"),
+        Index("idx_background_tasks_type_status", "task_type", "status"),
+    )
+
+    def __repr__(self):
+        return f"<BackgroundTask(id={self.id}, type={self.task_type}, status={self.status})>"
+
+    def to_dict(self):
+        return {
+            "task_id": self.id,
+            "status": self.status,
+            "source_id": self.source_id,
+            "user_id": self.user_id,
+            "message_count": self.message_count,
+            "result": self.result,
+            "error": self.error,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }

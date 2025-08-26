@@ -7,7 +7,7 @@ import json
 import uuid
 import hashlib
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict, Any, Union
 from setting.db import SessionLocal, db_manager
 from sqlalchemy import or_, and_, func, case
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status
@@ -21,8 +21,9 @@ from api.models import (
     TopicSummary,
 )
 from knowledge_graph.models import (
-    SourceData,
-    GraphBuild,
+    RawDataSource,
+    BackgroundTask,
+    GraphBuild
 )
 
 logger = logging.getLogger(__name__)
@@ -48,7 +49,7 @@ def log_sql_query(query, query_name="SQL Query"):
         logger.debug(f"SQL compile error: {e}")
 
 
-def _generate_build_id(doc_link: str, external_database_uri: str = "") -> str:
+def _generate_build_id(filename: str, metadata: DocumentMetadata, external_database_uri: str = "") -> str:
     """
     Generate a deterministic build_id based on doc_link and external_database_uri.
 
@@ -59,9 +60,13 @@ def _generate_build_id(doc_link: str, external_database_uri: str = "") -> str:
     Returns:
         SHA256 hash of the combined string
     """
+    doc_link = metadata.doc_link or ""
+    topic_name = metadata.topic_name
     # Combine doc_link and external_database_uri for hash generation
-    combined_string = f"{doc_link}||{external_database_uri}"
-
+    combined_string = f"{filename}||{doc_link}||{external_database_uri}||"
+    logger.info(
+        f"Generating build_id with filename: {filename}, doc_link: {doc_link}, topic_name: {topic_name}, external_database_uri: {external_database_uri}"
+    )
     # Generate SHA256 hash
     hash_object = hashlib.sha256(combined_string.encode("utf-8"))
     return hash_object.hexdigest()
@@ -131,7 +136,7 @@ def _save_file_and_metadata(
     file: UploadFile,
     metadata: DocumentMetadata,
     base_dir: Path,
-    build_id: str = None,
+    build_id: Optional[str] = None,
 ) -> None:
     """
     Helper function to save file and metadata to directory.
@@ -146,11 +151,12 @@ def _save_file_and_metadata(
     base_dir.mkdir(parents=True, exist_ok=True)
 
     # Save the uploaded file
-    file_path = base_dir / file.filename
+    filename = file.filename or "unknown"
+    file_path = base_dir / filename
     with open(file_path, "wb") as buffer:
         content = file.file.read()
         buffer.write(content)
-
+    logger.info(f"Saved file {filename} to {file_path}")
     # Save metadata as JSON
     metadata_file = base_dir / "document_metadata.json"
     metadata_dict = metadata.dict()
@@ -160,7 +166,7 @@ def _save_file_and_metadata(
 
     with open(metadata_file, "w", encoding="utf-8") as f:
         json.dump(metadata_dict, f, indent=2, ensure_ascii=False)
-
+    logger.info(f"Saved metadata for {filename} to {metadata_file}")
 
 def _get_versioned_directory(base_dir: Path) -> Path:
     """
@@ -179,6 +185,7 @@ def _get_versioned_directory(base_dir: Path) -> Path:
         versioned_dir = parent_dir / f"{base_name}_v{counter}"
         if not versioned_dir.exists():
             return versioned_dir
+        logger.info(f"Versioned directory already exists: {versioned_dir}")
         counter += 1
 
 
@@ -188,7 +195,7 @@ def _save_uploaded_file_with_metadata(
     try:
         _ensure_upload_dir()
 
-        filename = file.filename
+        filename = file.filename or "unknown"
         base_name = Path(filename).stem
         base_dir = UPLOAD_DIR / metadata.topic_name / base_name
 
@@ -198,17 +205,18 @@ def _save_uploaded_file_with_metadata(
             if db_manager.is_local_mode(metadata.database_uri)
             else metadata.database_uri
         )
-        build_id = _generate_build_id(metadata.doc_link, external_db_uri)
-
+        build_id = _generate_build_id(filename, metadata, external_db_uri or "")
+        logger.info(
+            f"Generated build_id: {build_id} for file {filename} with link {metadata.doc_link}"
+        )
         # Check if GraphBuild already exists for this build_id
         # This is sufficient since build_id uniquely identifies doc_link + database_uri
         with SessionLocal() as db:
             existing_build_status = (
-                db.query(GraphBuild)
+                db.query(RawDataSource)
                 .filter(
-                    GraphBuild.build_id == build_id,
-                    GraphBuild.topic_name == metadata.topic_name,
-                    GraphBuild.external_database_uri == external_db_uri,
+                    RawDataSource.id == build_id,
+                    RawDataSource.topic_name == metadata.topic_name,
                 )
                 .first()
             )
@@ -222,7 +230,6 @@ def _save_uploaded_file_with_metadata(
 
                 logger.info(
                     f"Found existing document with build_id: {build_id}, "
-                    f"storage_directory: {existing_build_status.storage_directory}"
                 )
                 return base_dir, build_id
             # If no existing source in database, check file system for existing metadata
@@ -236,6 +243,7 @@ def _save_uploaded_file_with_metadata(
             while True:
                 versioned_dir = parent_dir / f"{base_name}_v{counter}"
                 if versioned_dir.exists():
+                    logger.info(f"{versioned_dir} exists, checking for metadata")
                     directories_to_check.append(versioned_dir)
                     counter += 1
                 else:
@@ -287,7 +295,12 @@ def _save_uploaded_file_with_metadata(
 
 
 def _create_processing_task(
-    storage_directory: Path, metadata: DocumentMetadata, build_id: str
+    file: UploadFile, 
+    storage_directory: Path, 
+    metadata: DocumentMetadata, 
+    build_id: str, 
+    target_type: Optional[str] = None, 
+    process_strategy: Dict[str, Any] = {}
 ) -> None:
     """
     Create a background processing task for uploaded document.
@@ -311,19 +324,29 @@ def _create_processing_task(
             if db_manager.is_local_mode(metadata.database_uri)
             else metadata.database_uri
         )
-
+        file_content = file.file.read()
+        file_hash = hashlib.sha256(file_content).hexdigest()
+        file_path = storage_directory / (file.filename or "unknown")
+        logger.info(
+            f"Creating processing task for {storage_directory} with build_id: {build_id}, "
+            f"file_hash: {file_hash}, external_db_uri: {external_db_uri}"
+        )
         with SessionLocal() as db:
-            build_status = GraphBuild(
+            build_status = RawDataSource(
                 topic_name=metadata.topic_name,
+                target_type=target_type,
+                process_strategy=process_strategy or {},
                 build_id=build_id,
-                external_database_uri=external_db_uri,
-                storage_directory=str(storage_directory),
-                doc_link=metadata.doc_link,
+                file_path=str(file_path),
+                file_hash=file_hash,
+                original_filename=file.filename,
+                raw_data_source_metadata=metadata.dict(),
                 status="uploaded",
             )
             db.add(build_status)
+            logger.info(f"successfully created processing task for {file.filename} target: {build_status.target_type} process_strategy: {build_status.process_strategy}")
             db.commit()
-
+        logger.info(f"File {file.filename} successfully stored RawDataSource in database")
         if db_manager.is_local_mode(metadata.database_uri):
             logger.info(
                 f"Created local knowledge graph task: {build_id} in {storage_directory}"
@@ -518,7 +541,7 @@ async def upload_documents(
                     f"File with identical metadata already exists: {file.filename}"
                 )
             else:
-                _create_processing_task(storage_directory, file_metadata, build_id)
+                _create_processing_task(file, storage_directory, file_metadata, build_id)
 
                 processed_doc = ProcessedDocument(
                     id=build_id,
@@ -783,3 +806,80 @@ async def list_topics(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve topics",
         )
+
+def register_file_background_task(task_id: str, source_id: str, topic_name: str, file_count: int = 1) -> None:
+    """Register a new background task for file processing immediately."""
+    SessionLocal = db_manager.get_session_factory()
+    with SessionLocal() as db:
+
+        task = BackgroundTask(
+            id=task_id,
+            task_type="file_processing",
+            source_id=source_id,
+            topic_name=topic_name,
+            status="processing",
+            message_count=file_count
+        )
+        db.add(task)
+        db.commit()
+
+
+async def file_background_processing(
+    files_data: List[UploadFile],
+    metadata: Dict[str, Any],
+    links_list: List[str],
+    process_strategy: Optional[Union[str, Dict[str, Any]]] = None,
+    target_type: str = "knowledge_graph",
+    task_id: Optional[str] = None,
+    source_id: Optional[str] = None,
+) -> None:
+    """
+    Trigger background processing for uploaded files after upload.
+    
+    Args:
+        files_data: List of file data (filename, content, etc.)
+        metadata: Request metadata
+        links_list: List of links for files
+        target_type: Target processing type
+        task_id: Optional task ID for tracking
+    """
+    task_id = task_id or str(uuid.uuid4())
+    SessionLocal = db_manager.get_session_factory()
+    
+    try:
+        from tools.route_wrapper import ToolsRouteWrapper
+        
+        tools_wrapper = ToolsRouteWrapper()
+        
+        # Process the files
+        result = tools_wrapper.process_upload_request(
+            files=files_data,
+            metadata=metadata,
+            process_strategy=process_strategy,
+            target_type=target_type,
+            links=links_list,
+        )
+        
+        # Update task status with success
+        with SessionLocal() as db:
+
+            task = db.query(BackgroundTask).filter(BackgroundTask.id == task_id).first()
+            if task:
+                task.status = "completed"
+                task.source_id = source_id
+                task.result = result.to_dict() if hasattr(result, 'to_dict') else result
+                db.commit()
+        
+        logger.info(f"File background processing completed: {result.to_dict()}")
+        
+    except Exception as e:
+        # Update task status with error
+        with SessionLocal() as db:
+
+            task = db.query(BackgroundTask).filter(BackgroundTask.id == task_id).first()
+            if task:
+                task.status = "failed"
+                task.source_id = None
+                task.error = str(e)
+                db.commit()
+        logger.error(f"File background processing failed: {e}")

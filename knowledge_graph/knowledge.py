@@ -1,11 +1,12 @@
 from pathlib import Path
 import logging
 import hashlib
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 from knowledge_graph.models import (
     SourceData,
     ContentStore,
+    RawDataSource,
     GraphBuild,
     KnowledgeBlock,
     BlockSourceMapping,
@@ -17,7 +18,8 @@ from setting.db import SessionLocal
 from etl.extract import extract_source_data
 from utils.token import encode_text, decode_tokens
 from llm.factory import LLMInterface
-from setting.base import MAX_PROMPT_TOKENS
+from llm.embedding import get_text_embedding
+from setting.base import MAX_PROMPT_TOKENS, LLM_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +52,7 @@ class KnowledgeBuilder:
     """
 
     def __init__(
-        self, llm_client: LLMInterface = None, embedding_func=None, session_factory=None
+        self, llm_client: Optional[LLMInterface] = None, embedding_func=None, session_factory=None
     ):
         """
         Initialize the builder with a graph instance and specifications.
@@ -60,8 +62,8 @@ class KnowledgeBuilder:
             embedding_func: Function to generate embeddings
             session_factory: Database session factory. If None, uses default SessionLocal.
         """
-        self.llm_client = llm_client
-        self.embedding_func = embedding_func
+        self.llm_client = LLMInterface("ollama", model=LLM_MODEL)
+        self.embedding_func = embedding_func or get_text_embedding
         self.SessionLocal = session_factory or SessionLocal
 
     def extract_knowledge(
@@ -71,18 +73,26 @@ class KnowledgeBuilder:
     ):
         # Extract basic info of source
         doc_link = attributes.get("doc_link", None)
+        topic_name = attributes.get("topic_name", None)
+        file_name = attributes.get("filename", None)
         if doc_link is None or doc_link == "":
             doc_link = source_path
 
         with self.SessionLocal() as db:
             # Check if source data already exists by doc_link
             existing_source = (
-                db.query(SourceData).filter(SourceData.link == doc_link).first()
+                db.query(SourceData).filter(SourceData.link == doc_link, SourceData.topic_name == topic_name).first()
             )
 
             if existing_source:
+                rds_id = existing_source.raw_data_source_id
+                rds = (
+                    db.query(RawDataSource).filter(RawDataSource.id == rds_id).first()
+                )
+                rds.status = "etl_completed"
+                db.commit()
                 logger.info(
-                    f"Source data already exists for {source_path} (matched by link), reusing existing id: {existing_source.id}"
+                    f"Source data already exists for '{source_path}' with topic name '{topic_name}' , reusing existing id: {existing_source.id}"
                 )
                 return {
                     "status": "success",
@@ -94,17 +104,34 @@ class KnowledgeBuilder:
                     "source_name": existing_source.name,
                     "source_attributes": existing_source.attributes,
                 }
+            
+            existing_rds = (
+                db.query(RawDataSource).filter(
+                    RawDataSource.topic_name == topic_name,
+                    RawDataSource.original_filename == file_name,
+                    RawDataSource.target_type == "knowledge_build",
+                    RawDataSource.status == "uploaded"
+                ).first()
+            )
 
-        # Read raw file content first for hash calculation
-        with open(source_path, "rb") as f:
-            raw_content = f.read()
-            content_hash = hashlib.sha256(raw_content).hexdigest()
+            if existing_rds:
+                logger.info(
+                    f"Found RawDataSource '{existing_rds.id}' for file '{file_name}' with topic name '{topic_name}' and target_type '{existing_rds.target_type}'"
+                )
+                content_hash = existing_rds.file_hash
+                source_path = existing_rds.file_path
+                existing_rds.status = "etl_completed"
+                db.commit()
 
-        # Initialize variables
-        extracted_content = None
-        content_type = _get_content_type_from_path(source_path)
+            # Read raw file content first for hash calculation
+            with open(source_path, "rb") as f:
+                raw_content = f.read()
+                content_hash = hashlib.sha256(raw_content).hexdigest()
 
-        with self.SessionLocal() as db:
+            # Initialize variables
+            extracted_content = None
+            content_type = _get_content_type_from_path(source_path)
+
             # Check if content already exists
             content_store = (
                 db.query(ContentStore).filter_by(content_hash=content_hash).first()
@@ -140,11 +167,19 @@ class KnowledgeBuilder:
                 )
 
             source_data = SourceData(
-                name=Path(source_path).stem,
+                name=file_name or Path(source_path).stem,
+                topic_name=topic_name,
+                raw_data_source_id=existing_rds.id,
+                content_hash=content_store.content_hash,
                 link=doc_link,
                 source_type=content_type,
-                content_hash=content_store.content_hash,
-                attributes=attributes,
+                attributes={
+                    "file_path": str(source_path),
+                    "original_filename": file_name,
+                    "file_size": len(raw_content),
+                    "extraction_method": "KnowledgeBuildTool",
+                },
+                status="created",
             )
 
             db.add(source_data)
@@ -179,6 +214,8 @@ class KnowledgeBuilder:
             source_data = (
                 db.query(SourceData).filter(SourceData.id == source_id).first()
             )
+            source_data.status = "blocks_processing"
+            db.commit()
             if not source_data:
                 raise ValueError(f"SourceData with id {source_id} not found")
 
@@ -194,6 +231,8 @@ class KnowledgeBuilder:
                 logger.info(
                     f"Found {len(existing_blocks)} existing knowledge blocks for source {source_id}"
                 )
+                source_data.status = "blocks_completed"
+                db.commit()
                 existing_blocks_list = []
                 for block in existing_blocks:
                     existing_blocks_list.append(
@@ -445,7 +484,7 @@ class KnowledgeBuilder:
                 db.bulk_insert_mappings(BlockSourceMapping, mappings_to_create)
             else:
                 logger.info("All block-source mappings already exist")
-
+            source_data.status = "blocks_completed"
             db.commit()
             logger.info(
                 f"Processing completed for source {source_id}. Created {len(blocks_to_create)} new blocks, reused {len(existing_blocks)} existing blocks"

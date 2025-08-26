@@ -5,6 +5,7 @@ import json
 import logging
 
 from llm.base import BaseLLMProvider
+from setting.base import OLLAMA_BASE_URL
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +17,7 @@ class OllamaProvider(BaseLLMProvider):
 
     def __init__(self, model: str, **kwargs):
         super().__init__(model, **kwargs)
-        self.ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        self.ollama_base_url = OLLAMA_BASE_URL
 
     def generate(
         self, prompt: str, system_prompt: Optional[str] = None, **kwargs

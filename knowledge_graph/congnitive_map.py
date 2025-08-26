@@ -30,7 +30,9 @@ class DocumentCognitiveMapGenerator:
             llm_client: LLM interface for generating cognitive maps
             session_factory: Database session factory. If None, uses default SessionLocal.
         """
-        self.llm_client = llm_client
+        self.llm_client = (
+            LLMInterface("openai", model="gpt-4o") if llm_client is None else llm_client
+        )
         self.SessionLocal = session_factory or SessionLocal
         self.worker_count = worker_count
 
@@ -119,7 +121,11 @@ class DocumentCognitiveMapGenerator:
                     db.commit()
                     db.refresh(current_map)
                     return cognitive_map_data
-
+            else:
+                # Create new cognitive map entry
+                logger.info(
+                    f"Creating new cognitive map for document: {document['source_name']}"
+                )
             # Create new cognitive map entry
             cognitive_map = DocumentSummary(
                 document_id=document["source_id"],
@@ -213,6 +219,7 @@ class DocumentCognitiveMapGenerator:
                         logger.info(
                             f"Document processed successfully ({completed_count}/{len(documents)}): {doc['source_name']}"
                         )
+                        
                 except Exception as e:
                     error_msg = f"Unexpected error processing {doc['source_name']}: {e}"
                     errors.append(error_msg)
@@ -294,11 +301,22 @@ Guidelines:
 Return only the JSON, no other text."""
 
         try:
-            response = self.llm_client.generate(cognitive_map_prompt)
+            logger.info(
+                f"Generating cognitive map by prompt {cognitive_map_prompt[:100]}... "
+            )
+            from llm.factory import LLMInterface
+
+            llm_client = LLMInterface("openai", model="gpt-4o")
+            response = llm_client.generate(cognitive_map_prompt)
+            logger.info(
+                f"successfully generated response for document: {document['source_name']}"
+            )
 
             # Use robust JSON parsing with escape error fixing and LLM fallback
             cognitive_map_data = robust_json_parse(response, self.llm_client, "object")
-
+            logger.info(
+                f"Parsed cognitive map data for {document['source_name']}: {cognitive_map_data}"
+            )
             # Validate and set defaults for required fields
             cognitive_map_data.setdefault("summary", "Summary generation failed")
             cognitive_map_data.setdefault("key_entities", [])

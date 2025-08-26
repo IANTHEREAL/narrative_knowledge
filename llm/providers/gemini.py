@@ -25,23 +25,27 @@ class GeminiProvider(BaseLLMProvider):
         self.client = genai.Client(api_key=api_key)
 
     def generate(
-        self, prompt: str, context: Optional[str] = None, **kwargs
+        self, prompt: str, system_prompt: Optional[str] = None, **kwargs
     ) -> Optional[str]:
-        full_prompt = f"{context}\n{prompt}" if context else prompt
+        full_prompt = f"{system_prompt}\n{prompt}" if system_prompt else prompt
         response = self._retry_with_exponential_backoff(
             self.client.models.generate_content,
             model=self.model,
             contents=full_prompt,
         )
-        return response.text.strip()
+        if response is not None and hasattr(response, "text") and response.text is not None:
+            return response.text.strip()
+        else:
+            logger.error("Gemini API response is None or missing 'text' attribute.")
+            return None
 
     def generate_stream(
-        self, prompt: str, context: Optional[str] = None, **kwargs
+        self, prompt: str, system_prompt: Optional[str] = None, **kwargs
     ) -> Generator[str, None, None]:
         """
         Generate streaming response from Gemini API.
         """
-        full_prompt = f"{context}\n{prompt}" if context else prompt
+        full_prompt = f"{system_prompt}\n{prompt}" if system_prompt else prompt
         try:
             response = self._retry_with_exponential_backoff(
                 self.client.models.generate_content_stream,
@@ -49,14 +53,18 @@ class GeminiProvider(BaseLLMProvider):
                 contents=full_prompt,
             )
 
-            for resp in response:
-                if not resp.candidates:
-                    continue
+            if response is not None:
+                for resp in response:
+                    if not resp.candidates:
+                        continue
 
-                for candidate in resp.candidates:
-                    for part in candidate.content.parts:
-                        if part.text:
-                            yield part.text
+                    for candidate in resp.candidates:
+                        for part in candidate.content.parts:
+                            if part.text:
+                                yield part.text
+            else:
+                logger.error("Gemini API streaming response is None.")
+                yield "Error: Gemini API streaming response is None."
 
         except Exception as e:
             logger.error(f"Error during Gemini streaming: {e}")

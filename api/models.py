@@ -33,6 +33,8 @@ class ProcessedDocument(BaseModel):
     doc_link: Optional[str] = None
     file_type: str
     status: str = "processed"
+    
+    
 
 
 class DocumentInfo(BaseModel):

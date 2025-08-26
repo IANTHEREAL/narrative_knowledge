@@ -11,12 +11,15 @@ from knowledge_graph.models import (
     Entity,
     Relationship,
     AnalysisBlueprint,
+    SourceData,
     SourceGraphMapping,
 )
 from knowledge_graph.query import query_existing_knowledge
 from utils.json_utils import robust_json_parse
 from setting.db import SessionLocal
 from llm.factory import LLMInterface
+from llm.embedding import get_text_embedding
+from llm.embedding import text_based_mock_embedding
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +29,7 @@ class NarrativeKnowledgeGraphBuilder:
     A builder class for constructing narrative knowledge graphs from documents.
     Implements the two-stage extraction pipeline from graph_design.md.
     """
+    
 
     def __init__(
         self,
@@ -42,7 +46,7 @@ class NarrativeKnowledgeGraphBuilder:
             session_factory: Database session factory. If None, uses default SessionLocal.
         """
         self.llm_client = llm_client
-        self.embedding_func = embedding_func
+        self.embedding_func = get_text_embedding if embedding_func is None else embedding_func
         self.SessionLocal = session_factory or SessionLocal
         self._quality_standard = self._load_quality_standard()
 
@@ -61,7 +65,7 @@ class NarrativeKnowledgeGraphBuilder:
                 with open(quality_standard_path, "r", encoding="utf-8") as f:
                     quality_standard = f.read()
                     logger.info(
-                        f"Loaded quality standard from {quality_standard_path}, standard: {quality_standard}"
+                        f"Loaded quality standard from {quality_standard_path}"         
                     )
                     return quality_standard
             else:
@@ -87,6 +91,7 @@ class NarrativeKnowledgeGraphBuilder:
         topic_name: str,
         cognitive_maps: List[Dict],
         force_regenerate: bool = False,
+        rate_limit: Optional[float] = None
     ) -> AnalysisBlueprint:
         """
         Stage 2: Generate Global Blueprint & Instructions for cross-document coordination.
@@ -100,22 +105,18 @@ class NarrativeKnowledgeGraphBuilder:
         - Conflict resolution strategies
         - Unified timeline integration
         """
+        if rate_limit is not None and rate_limit <= 0.15:
+            with self.SessionLocal() as db:
+                existing_blueprint = db.query(AnalysisBlueprint).filter(
+                        AnalysisBlueprint.topic_name == topic_name
+                    ).order_by(
+                        AnalysisBlueprint.created_at.desc()
+                    ).first()
+            if existing_blueprint:
+                logger.info("existing blueprint is enough, reuse it")
+                return existing_blueprint
         if len(cognitive_maps) == 0:
             raise ValueError(f"No cognitive maps found for topic: {topic_name}")
-
-        with self.SessionLocal() as db:
-            # Check if blueprint already exists
-            existing_blueprint = (
-                db.query(AnalysisBlueprint)
-                .filter(AnalysisBlueprint.topic_name == topic_name)
-                .order_by(AnalysisBlueprint.created_at.desc())
-                .first()
-            )
-
-            if existing_blueprint and not force_regenerate:
-                logger.info(f"Using existing global blueprint for {topic_name}")
-                return existing_blueprint
-
         # Enhanced Global Blueprint Generation Prompt
         blueprint_prompt = f"""You are a master strategist analyzing cognitive maps from {len(cognitive_maps)} documents for "{topic_name}". 
 
@@ -200,7 +201,13 @@ Generate the global blueprint for "{topic_name}"."""
             logger.info(
                 f"Generating global blueprint for {topic_name} with {len(cognitive_maps)} cognitive maps"
             )
-            response = self.llm_client.generate(blueprint_prompt, max_tokens=8192)
+            # Write it this way temporarily to make the process work
+            from llm.factory import LLMInterface
+            llm_client = LLMInterface("openai", model="gpt-4o")
+            response = llm_client.generate(blueprint_prompt, max_tokens=8192)
+            logger.info(
+                f"Successfully generated global blueprint for {topic_name}"
+            )
         except Exception as e:
             logger.error(f"Error generating global blueprint: {e}")
             raise RuntimeError(f"Error generating global blueprint: {e}")
@@ -246,12 +253,25 @@ Generate the global blueprint for "{topic_name}"."""
                 "global_timeline": global_timeline,
                 "document_count": len(cognitive_maps),
             }
-
+            logger.info(
+                f"Processed {len(cognitive_maps)} cognitive maps."
+            )
             with self.SessionLocal() as db:
+                blueprint = db.query(AnalysisBlueprint).filter_by(topic_name=topic_name).first()
+
+            if blueprint:
+                # update records
+                blueprint.processing_items = blueprint_items
+                blueprint.processing_instructions = processing_instructions
+                blueprint.status = "updated"
+            else:
                 blueprint = AnalysisBlueprint(
                     topic_name=topic_name,
                     processing_items=blueprint_items,
                     processing_instructions=processing_instructions,
+                    contributing_source_data_ids=[
+                        doc["source_id"] for doc in cognitive_maps
+                    ]
                 )
 
                 db.add(blueprint)
@@ -268,7 +288,7 @@ Generate the global blueprint for "{topic_name}"."""
 
         except Exception as e:
             logger.error(
-                f"Error generating global blueprint: {e}. response: {response}"
+                f"Error generating global blueprint: {e}. "
             )
             raise RuntimeError(f"Error generating global blueprint: {e}")
 
@@ -284,7 +304,7 @@ Generate the global blueprint for "{topic_name}"."""
         Returns all triplets with their source document information.
         """
         logger.info(
-            f"Processing document to extract triplets: {document['source_name']}"
+            f"Processing document to extract triplets: {document['source_name']} for topic {topic_name}"
         )
         # check whether the document is already processed with topic_name in SourceGraphMapping
         with self.SessionLocal() as db:
@@ -312,12 +332,8 @@ Generate the global blueprint for "{topic_name}"."""
             semantic_triplets = self.extract_narrative_triplets_from_document_content(
                 topic_name, document_content, blueprint, document_cognitive_map
             )
-
-            for triplet in semantic_triplets:
-                logger.info(f"semantic triplet: {triplet}")
-
             logger.info(
-                f"Document({document['source_name']}): {len(semantic_triplets)} semantic triplets. Extracted {len(semantic_triplets)} total triplets."
+                f"Document({document['source_name']}):Extracted {len(semantic_triplets)} semantic triplets: {semantic_triplets}"
             )
 
             return semantic_triplets
@@ -448,13 +464,19 @@ Now, please generate the narrative triplets for {topic_name} in valid JSON forma
 """
 
         try:
-            response = self.llm_client.generate(extraction_prompt, max_tokens=16384)
+            from llm.factory import LLMInterface
+            llm_client = LLMInterface("openai", model="gpt-4o")
+            logger.info(
+                f"Generating narrative triplets for {topic_name} document content"
+            )
+            response = llm_client.generate(extraction_prompt, max_tokens=16384)
         except Exception as e:
             logger.error(f"Error generating narrative triplets: {e}")
             raise RuntimeError(f"Error generating narrative triplets: {e}")
 
         try:
             triplets = self._parse_llm_json_response(response, "array")
+            logger.info(f"Successfully generated {len(triplets)} narrative triplets")
             # Add metadata to each triplet
             for triplet in triplets:
                 triplet.update({"topic_name": topic_name, "category": "narrative"})
@@ -722,10 +744,13 @@ Begin your detective work and discover the hidden knowledge!
         entity_id_cache = {}  # Cache entity IDs to avoid cross-session issues
 
         for triplet in triplets:
+            logger.info(
+                f"Processing triplet: {triplet['subject']['name']} - {triplet['predicate']} - {triplet['object']['name']}"
+            )
 
             def process_single_triplet():
                 nonlocal entities_created, relationships_created
-
+                logger.info("start processing single triplet to graph")
                 with self.SessionLocal() as db:
                     try:
                         # Create or get subject entity
@@ -756,6 +781,9 @@ Begin your detective work and discover the hidden knowledge!
                                         "topic_name": triplet["topic_name"],
                                         "category": triplet["category"],
                                     },
+                                )
+                                logger.info(
+                                    f"successfully embedded subject entity: {subject_name} by {self.embedding_func.__name__}"
                                 )
                                 db.add(subject_entity)
                                 db.flush()
@@ -875,8 +903,8 @@ Begin your detective work and discover the hidden knowledge!
             try:
                 self._simple_retry(process_single_triplet)
             except Exception as e:
-                logger.error(f"Error processing triplet {triplet}: {e}")
-                raise RuntimeError(f"Error processing triplet {triplet}: {e}")
+                logger.error(f"Error processing triplet to graph: {e}")
+                raise RuntimeError(f"Error processing triplet to graph: {e}")
 
         return entities_created, relationships_created
 

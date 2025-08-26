@@ -2,10 +2,17 @@ import json
 import logging
 from pathlib import Path
 import pymupdf
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from magic_pdf.data.data_reader_writer import FileBasedDataWriter, FileBasedDataReader
+    from magic_pdf.data.dataset import PymuDocDataset
+    from magic_pdf.model.doc_analyze_by_custom_model import doc_analyze
 
 from utils.file import read_file_content
 
 logger = logging.getLogger(__name__)
+
+
 
 try:
     # Magic PDF imports
@@ -61,12 +68,15 @@ def convert_pdf_to_markdown_using_pymupdf(pdf_path):
         doc = pymupdf.open(pdf_path)
         markdown_content = []
         pages_data = []
+        total_pages = doc.page_count
 
-        for page_num, page in enumerate(doc, 1):
-            text = page.get_text()  # get plain text encoded as UTF-8
+        for page_num in range(total_pages):
+            page = doc.load_page(page_num)
+            text_page = page.get_textpage()  # get TextPage object
+            text = text_page.extractText()  # extract plain text as string
             if text.strip():  # Only add non-empty pages
                 # Add to markdown content
-                markdown_content.append(f"<!-- Page {page_num} -->\n\n")
+                markdown_content.append(f"<!-- Page {page_num+1} -->\n\n")
                 markdown_content.append(text.strip() + "\n\n")
 
                 # Add to JSON structure
@@ -248,7 +258,7 @@ def extract_data_from_pdf(path):
             logger.info("Using pymupdf to extract data from PDFs")
             markdown_file = convert_pdf_to_markdown_using_pymupdf(path)
 
-        full_content = read_file_content(markdown_file)
+        full_content = read_file_content(str(markdown_file))
         return {
             "status": "success",
             "content": full_content,
@@ -259,7 +269,7 @@ def extract_data_from_pdf(path):
         raise RuntimeError(f"Error extracting data from {path}: {e}")
 
 
-def extract_source_data(path: str) -> str:
+def extract_source_data(path: str) -> dict[str, str]:
     """
     Extract source data from a file
     """

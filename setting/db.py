@@ -1,12 +1,13 @@
-from sqlalchemy import create_engine, text, inspect as sqlalchemy_inspect
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from setting.base import DATABASE_URI, SESSION_POOL_SIZE
 import logging
 from typing import Dict, Optional
-from sqlalchemy.schema import CreateTable, ForeignKeyConstraint
 
 logger = logging.getLogger(__name__)
+
+if DATABASE_URI is None:
+    raise ValueError("DATABASE_URI cannot be None when creating the engine.")
 
 engine = create_engine(
     DATABASE_URI,
@@ -23,7 +24,7 @@ engine = create_engine(
     echo=False,
 )
 
-Base = declarative_base()
+# Base = declarative_base()
 
 class DatabaseManager:
     """
@@ -56,6 +57,7 @@ class DatabaseManager:
             # Let SQLAlchemy handle all the complexity
             # It automatically handles: dependency order, IF NOT EXISTS behavior, 
             # all attributes, indexes, constraints, etc.
+            # Base.metadata.drop_all(bind=engine)
             Base.metadata.create_all(engine)
             logger.info("Successfully created/verified all tables in database")
                 
@@ -84,6 +86,8 @@ class DatabaseManager:
         # Multi-database mode
         if database_uri not in self.user_connections:
             logger.info(f"Creating new connection for external database")
+            if database_uri is None:
+                raise ValueError("database_uri cannot be None when creating a new engine.")
             try:
                 engine = create_engine(
                     database_uri,
@@ -154,7 +158,7 @@ class DatabaseManager:
         """Close all user database connections."""
         for database_uri, session_factory in self.user_connections.items():
             try:
-                session_factory.bind.dispose()
+                session_factory.close_all()
                 logger.info(f"Closed connection for database: {database_uri[:50]}...")
             except Exception as e:
                 logger.error(f"Error closing connection: {e}")

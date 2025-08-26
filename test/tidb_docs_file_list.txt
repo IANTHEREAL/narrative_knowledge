@@ -1,0 +1,136 @@
+# TiDB Cloud Documentation Files
+
+Total files to upload: 33
+
+1. TiDB Cloud Introduction
+   Local: /Users/hjy/Downloads/docs-master/tidb-cloud/tidb-cloud-intro.md
+   GitHub: https://github.com/pingcap/docs/blob/master/tidb-cloud/tidb-cloud-intro.md
+
+2. TiDB Cloud Quickstart
+   Local: /Users/hjy/Downloads/docs-master/tidb-cloud/tidb-cloud-quickstart.md
+   GitHub: https://github.com/pingcap/docs/blob/master/tidb-cloud/tidb-cloud-quickstart.md
+
+3. TiDB Cloud HTAP Quickstart
+   Local: /Users/hjy/Downloads/docs-master/tidb-cloud/tidb-cloud-htap-quickstart.md
+   GitHub: https://github.com/pingcap/docs/blob/master/tidb-cloud/tidb-cloud-htap-quickstart.md
+
+4. TiDB Cloud CLI
+   Local: /Users/hjy/Downloads/docs-master/tidb-cloud/get-started-with-cli.md
+   GitHub: https://github.com/pingcap/docs/blob/master/tidb-cloud/get-started-with-cli.md
+
+5. TiDB Cloud PoC
+   Local: /Users/hjy/Downloads/docs-master/tidb-cloud/tidb-cloud-poc.md
+   GitHub: https://github.com/pingcap/docs/blob/master/tidb-cloud/tidb-cloud-poc.md
+
+6. TiDB Cloud Key Concepts
+   Local: /Users/hjy/Downloads/docs-master/tidb-cloud/key-concepts.md
+   GitHub: https://github.com/pingcap/docs/blob/master/tidb-cloud/key-concepts.md
+
+7. TiDB Cloud Architecture
+   Local: /Users/hjy/Downloads/docs-master/tidb-cloud/architecture-concepts.md
+   GitHub: https://github.com/pingcap/docs/blob/master/tidb-cloud/architecture-concepts.md
+
+8. TiDB Cloud Database Schema
+   Local: /Users/hjy/Downloads/docs-master/tidb-cloud/database-schema-concepts.md
+   GitHub: https://github.com/pingcap/docs/blob/master/tidb-cloud/database-schema-concepts.md
+
+9. TiDB Cloud Transactions
+   Local: /Users/hjy/Downloads/docs-master/tidb-cloud/transaction-concepts.md
+   GitHub: https://github.com/pingcap/docs/blob/master/tidb-cloud/transaction-concepts.md
+
+10. TiDB Cloud SQL
+   Local: /Users/hjy/Downloads/docs-master/tidb-cloud/sql-concepts.md
+   GitHub: https://github.com/pingcap/docs/blob/master/tidb-cloud/sql-concepts.md
+
+11. TiDB Cloud AI Features
+   Local: /Users/hjy/Downloads/docs-master/tidb-cloud/ai-feature-concepts.md
+   GitHub: https://github.com/pingcap/docs/blob/master/tidb-cloud/ai-feature-concepts.md
+
+12. TiDB Cloud Data Service
+   Local: /Users/hjy/Downloads/docs-master/tidb-cloud/data-service-concepts.md
+   GitHub: https://github.com/pingcap/docs/blob/master/tidb-cloud/data-service-concepts.md
+
+13. TiDB Cloud Scalability
+   Local: /Users/hjy/Downloads/docs-master/tidb-cloud/scalability-concepts.md
+   GitHub: https://github.com/pingcap/docs/blob/master/tidb-cloud/scalability-concepts.md
+
+14. TiDB Cloud Serverless HA
+   Local: /Users/hjy/Downloads/docs-master/tidb-cloud/serverless-high-availability.md
+   GitHub: https://github.com/pingcap/docs/blob/master/tidb-cloud/serverless-high-availability.md
+
+15. TiDB Cloud Dedicated HA
+   Local: /Users/hjy/Downloads/docs-master/tidb-cloud/high-availability-with-multi-az.md
+   GitHub: https://github.com/pingcap/docs/blob/master/tidb-cloud/high-availability-with-multi-az.md
+
+16. TiDB Cloud Monitoring
+   Local: /Users/hjy/Downloads/docs-master/tidb-cloud/monitoring-concepts.md
+   GitHub: https://github.com/pingcap/docs/blob/master/tidb-cloud/monitoring-concepts.md
+
+17. TiDB Cloud Data Streaming
+   Local: /Users/hjy/Downloads/docs-master/tidb-cloud/data-streaming-concepts.md
+   GitHub: https://github.com/pingcap/docs/blob/master/tidb-cloud/data-streaming-concepts.md
+
+18. TiDB Cloud Backup & Restore
+   Local: /Users/hjy/Downloads/docs-master/tidb-cloud/backup-and-restore-concepts.md
+   GitHub: https://github.com/pingcap/docs/blob/master/tidb-cloud/backup-and-restore-concepts.md
+
+19. TiDB Cloud Security
+   Local: /Users/hjy/Downloads/docs-master/tidb-cloud/security-concepts.md
+   GitHub: https://github.com/pingcap/docs/blob/master/tidb-cloud/security-concepts.md
+
+20. Developer Guide Overview
+   Local: /Users/hjy/Downloads/docs-master/develop/dev-guide-overview.md
+   GitHub: https://github.com/pingcap/docs/blob/master/develop/dev-guide-overview.md
+
+21. Build TiDB Cloud Cluster
+   Local: /Users/hjy/Downloads/docs-master/develop/dev-guide-build-cluster-in-cloud.md
+   GitHub: https://github.com/pingcap/docs/blob/master/develop/dev-guide-build-cluster-in-cloud.md
+
+22. TiDB CRUD SQL
+   Local: /Users/hjy/Downloads/docs-master/develop/dev-guide-tidb-crud-sql.md
+   GitHub: https://github.com/pingcap/docs/blob/master/develop/dev-guide-tidb-crud-sql.md
+
+23. Choose Driver or ORM
+   Local: /Users/hjy/Downloads/docs-master/develop/dev-guide-choose-driver-or-orm.md
+   GitHub: https://github.com/pingcap/docs/blob/master/develop/dev-guide-choose-driver-or-orm.md
+
+24. Schema Design Overview
+   Local: /Users/hjy/Downloads/docs-master/develop/dev-guide-schema-design-overview.md
+   GitHub: https://github.com/pingcap/docs/blob/master/develop/dev-guide-schema-design-overview.md
+
+25. Create Database
+   Local: /Users/hjy/Downloads/docs-master/develop/dev-guide-create-database.md
+   GitHub: https://github.com/pingcap/docs/blob/master/develop/dev-guide-create-database.md
+
+26. Create Table
+   Local: /Users/hjy/Downloads/docs-master/develop/dev-guide-create-table.md
+   GitHub: https://github.com/pingcap/docs/blob/master/develop/dev-guide-create-table.md
+
+27. Create Secondary Indexes
+   Local: /Users/hjy/Downloads/docs-master/develop/dev-guide-create-secondary-indexes.md
+   GitHub: https://github.com/pingcap/docs/blob/master/develop/dev-guide-create-secondary-indexes.md
+
+28. Vector Search Overview
+   Local: /Users/hjy/Downloads/docs-master/vector-search/vector-search-overview.md
+   GitHub: https://github.com/pingcap/docs/blob/master/vector-search/vector-search-overview.md
+
+29. Vector Search SQL
+   Local: /Users/hjy/Downloads/docs-master/vector-search/vector-search-get-started-using-sql.md
+   GitHub: https://github.com/pingcap/docs/blob/master/vector-search/vector-search-get-started-using-sql.md
+
+30. Vector Search Python
+   Local: /Users/hjy/Downloads/docs-master/vector-search/vector-search-get-started-using-python.md
+   GitHub: https://github.com/pingcap/docs/blob/master/vector-search/vector-search-get-started-using-python.md
+
+31. TiDB Cloud Migration Overview
+   Local: /Users/hjy/Downloads/docs-master/tidb-cloud/tidb-cloud-migration-overview.md
+   GitHub: https://github.com/pingcap/docs/blob/master/tidb-cloud/tidb-cloud-migration-overview.md
+
+32. Create Serverless Cluster
+   Local: /Users/hjy/Downloads/docs-master/tidb-cloud/create-tidb-cluster-serverless.md
+   GitHub: https://github.com/pingcap/docs/blob/master/tidb-cloud/create-tidb-cluster-serverless.md
+
+33. Create Dedicated Cluster
+   Local: /Users/hjy/Downloads/docs-master/tidb-cloud/create-tidb-cluster.md
+   GitHub: https://github.com/pingcap/docs/blob/master/tidb-cloud/create-tidb-cluster.md
+
